@@ -1,0 +1,45 @@
+# Runtime dependencies for the mp4 RAG pipeline.
+# Install with: pip install -r requirements.txt
+#
+# Exact pins on everything the pipeline currently imports, so a fresh clone
+# reproduces the environment these results were measured in. The floors that
+# used to be here were not enough: sentence-transformers 5 renamed
+# `get_sentence_embedding_dimension`, which `>=3.0` happily installed into.
+#
+# Packages not yet imported by any code path keep a floor — pinning a version
+# nothing has run against records a guess as a fact. Pin each one as it comes
+# into use.
+
+# --- PDF ingestion ---
+pymupdf==1.28.0        # primary PDF text/metadata extraction (spec-required)
+pdfplumber>=0.11       # NOT YET USED: optional fallback loader (table-heavy pages)
+
+# --- Chunking ---
+tiktoken==0.13.0       # accurate token counts (cl100k_base)
+pysbd==0.3.4           # sentence segmentation with char offsets
+nltk>=3.8              # NOT YET USED: porter tokenizer for BM25
+
+# --- Embeddings & vector store ---
+sentence-transformers==5.6.1   # all-MiniLM-L6-v2, all-mpnet-base-v2
+faiss-cpu==1.14.3              # IndexFlatIP vector store (spec-required)
+numpy==2.5.1
+
+# --- Sparse retrieval ---
+rank-bm25>=0.2         # NOT YET USED
+
+# --- Reranking ---
+cohere>=5.13           # NOT YET USED: optional, --rerank cohere
+
+# --- Generation & judging ---
+openai>=2.0.0          # NOT YET USED. Floor raised from 1.0: instructor 1.15
+                       #   requires openai>=2, and the old floor let pip walk
+                       #   back to instructor 1.2, which pins pydantic==2.7.0.
+instructor>=1.15       # NOT YET USED: structured outputs for citations + LLM judge
+pydantic==2.13.4
+
+# --- Config / CLI / web ---
+pyyaml==6.0.3          # config/experiments/*.yaml
+streamlit==1.60.0      # needs st.dialog + fragment-scoped rerun + width="stretch"
+rich==14.3.4           # NOT 15.x: instructor requires rich<15, and typer is
+                       #   the only other consumer here and accepts either.
+requests==2.34.2       # arXiv PDF download

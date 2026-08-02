@@ -13,6 +13,11 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 # Libraries whose DEBUG output would swamp a debug-level log file.
 NOISY_LOGGERS = ("PIL", "pdfminer", "matplotlib", "urllib3")
 
+# Libraries that log at INFO on the way to doing something ordinary. The model
+# download in the embedding stage otherwise buries its own progress under a
+# dozen HTTP request lines per run.
+CHATTY_AT_INFO = ("httpx", "httpcore", "huggingface_hub", "filelock", "urllib3")
+
 
 def setup_logging(
     script_name: str,
@@ -42,6 +47,8 @@ def setup_logging(
     # force=True so a second call (e.g. main() invoked repeatedly in tests)
     # rebinds handlers instead of silently keeping the first configuration
     logging.basicConfig(level=level, format="%(message)s", handlers=handlers, force=True)
+    for name in CHATTY_AT_INFO:
+        logging.getLogger(name).setLevel(logging.WARNING)
     if debug_file:
         for name in NOISY_LOGGERS:
             logging.getLogger(name).setLevel(logging.INFO)
