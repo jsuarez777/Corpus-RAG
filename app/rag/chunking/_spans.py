@@ -82,6 +82,7 @@ def drop_blank(text: str, spans: list[Span]) -> list[Span]:
     """Discard spans that are empty or all whitespace.
 
     A run of blank lines between sections can otherwise become a chunk with no
-    retrievable content, which costs an embedding call and pollutes recall@k.
+    retrievable content, which costs an embedding call and takes a slot in the
+    top k that a real chunk could have used.
     """
     return [span for span in spans if text[span.start : span.end].strip()]
