@@ -1,0 +1,7 @@
+Context passages:
+
+{context}
+
+Question: {query}
+
+Answer using only the passages above, citing each claim with its bracketed number.

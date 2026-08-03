@@ -34,9 +34,11 @@ snowballstemmer==3.1.1 # Porter stemmer for the BM25 tokenizer. Replaces nltk,
 cohere>=5.13           # NOT YET USED: optional, --rerank cohere
 
 # --- Generation & judging ---
-openai>=2.0.0          # NOT YET USED. Floor raised from 1.0: instructor 1.15
-                       #   requires openai>=2, and the old floor let pip walk
-                       #   back to instructor 1.2, which pins pydantic==2.7.0.
+openai==2.52.0         # responses API, behind app/rag/generation/llm.py. Pinned
+                       #   on first use; the >=2.0 floor it replaces was there
+                       #   because instructor 1.15 requires openai>=2, and the
+                       #   old 1.0 floor let pip walk back to instructor 1.2,
+                       #   which pins pydantic==2.7.0.
 instructor>=1.15       # NOT YET USED: structured outputs for citations + LLM judge
 pydantic==2.13.4
 
