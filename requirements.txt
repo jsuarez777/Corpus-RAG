@@ -17,7 +17,6 @@ pdfplumber>=0.11       # NOT YET USED: optional fallback loader (table-heavy pag
 # --- Chunking ---
 tiktoken==0.13.0       # accurate token counts (cl100k_base)
 pysbd==0.3.4           # sentence segmentation with char offsets
-nltk>=3.8              # NOT YET USED: porter tokenizer for BM25
 
 # --- Embeddings & vector store ---
 sentence-transformers==5.6.1   # all-MiniLM-L6-v2, all-mpnet-base-v2
@@ -25,7 +24,11 @@ faiss-cpu==1.14.3              # IndexFlatIP vector store (spec-required)
 numpy==2.5.1
 
 # --- Sparse retrieval ---
-rank-bm25>=0.2         # NOT YET USED
+rank-bm25==0.2.2
+snowballstemmer==3.1.1 # Porter stemmer for the BM25 tokenizer. Replaces nltk,
+                       #   whose 3.10 import guard blocks any module resolving
+                       #   inside the cwd — and a .venv/ in the project trips
+                       #   it, so `import nltk` fails outright in this layout.
 
 # --- Reranking ---
 cohere>=5.13           # NOT YET USED: optional, --rerank cohere

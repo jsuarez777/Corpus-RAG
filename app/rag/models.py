@@ -42,11 +42,19 @@ class DocumentMetadata(BaseModel):
 class ChunkMetadata(BaseModel):
     """Where a chunk came from, and how to score it against qrels.
 
-    ``section_index`` is assigned during ingestion by matching chunk text
+    ``section_indices`` is assigned during ingestion by matching chunk text
     against ``corpus/{PAPER_ID}.json``; relevance is
-    ``(document_id, section_index) in qrels[query]``. It stays optional because
-    alignment can fail, and that coverage gap is a finding to report rather
-    than an error to raise.
+    ``qrels[query].section_id in section_indices``.
+
+    It is a list, not a single index, because chunk boundaries and section
+    boundaries are set by different processes and do not line up: measured on
+    this corpus, 4–14% of chunks straddle a section boundary depending on the
+    chunker. Forcing a straddling chunk into one section leaves the other
+    section with no chunks at all, and any query pointing at it then scores
+    zero recall however good the retriever is.
+
+    An empty list means alignment found nothing — a coverage figure to report,
+    not an error to raise.
     """
 
     model_config = ConfigDict(extra="allow")
@@ -57,7 +65,9 @@ class ChunkMetadata(BaseModel):
     start_char: int = Field(ge=0, description="Offset into the parent document's content")
     end_char: int = Field(ge=0)
     chunk_index: int = Field(ge=0, description="Position of this chunk within its document")
-    section_index: int | None = Field(default=None, ge=0)
+    section_indices: list[int] = Field(
+        default_factory=list, description="Every corpus section this chunk overlaps"
+    )
 
     @model_validator(mode="after")
     def _check_span(self) -> "ChunkMetadata":

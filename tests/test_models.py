@@ -44,7 +44,7 @@ def chunk(document: Document) -> Chunk:
             start_char=0,
             end_char=26,
             chunk_index=0,
-            section_index=3,
+            section_indices=[3],
         ),
     )
 
@@ -117,7 +117,7 @@ class TestChunk:
                 chunk_index=0,
             )
 
-    @pytest.mark.parametrize("field", ["start_char", "chunk_index", "section_index"])
+    @pytest.mark.parametrize("field", ["start_char", "chunk_index"])
     def test_negative_offsets_rejected(self, document: Document, field: str) -> None:
         kwargs = {
             "document_id": document.id,
@@ -129,11 +129,17 @@ class TestChunk:
         with pytest.raises(ValidationError, match="greater than or equal to 0"):
             ChunkMetadata(**{**kwargs, field: -1})
 
-    def test_section_index_optional(self, chunk: Chunk) -> None:
+    def test_section_indices_default_to_empty(self, chunk: Chunk) -> None:
         """Alignment against the corpus can fail; that is a coverage finding,
         not a hard error."""
-        metadata = ChunkMetadata(**{**chunk.metadata.model_dump(), "section_index": None})
-        assert metadata.section_index is None
+        metadata = ChunkMetadata(**{**chunk.metadata.model_dump(), "section_indices": []})
+        assert metadata.section_indices == []
+
+    def test_a_chunk_can_belong_to_two_sections(self, chunk: Chunk) -> None:
+        """Chunk and section boundaries are set by different processes, so a
+        chunk straddling a section break is evidence for both."""
+        metadata = ChunkMetadata(**{**chunk.metadata.model_dump(), "section_indices": [3, 4]})
+        assert metadata.section_indices == [3, 4]
 
     def test_document_id_must_be_a_uuid(self) -> None:
         with pytest.raises(ValidationError, match="valid UUID"):

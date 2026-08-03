@@ -9,8 +9,8 @@ from app.rag.loaders._pages import PAGE_SEPARATOR, join_pages, page_of
 from app.rag.loaders.pymupdf_loader import PyMuPDFLoader
 from app.rag.loaders.store import load_document, load_documents, save_document
 
-# pdfplumber_loader lands here once the column/reflow port is measured against
-# this one (INGESTION_PROPOSAL.md, step 6).
+# pdfplumber_loader lands here once its column/reflow handling is measured
+# against this one.
 LOADERS: dict[str, type[BaseLoader]] = {
     PyMuPDFLoader.name: PyMuPDFLoader,
 }

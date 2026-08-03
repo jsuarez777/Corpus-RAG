@@ -22,8 +22,7 @@ from app.rag.chunking.sentence import SentenceChunker
 from app.rag.chunking.sliding_window import SlidingWindowChunker
 from app.rag.chunking.store import config_slug, load_chunks, save_chunks
 
-# semantic.py lands here once the embedding stage exists to inject into it
-# (INGESTION_PROPOSAL.md, step 7).
+# semantic.py lands here once the embedding stage exists to inject into it.
 CHUNKERS: dict[str, type[BaseChunker]] = {
     FixedSizeChunker.name: FixedSizeChunker,
     SentenceChunker.name: SentenceChunker,
