@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import math
+import os
 from pathlib import Path
 from uuid import uuid4
 
@@ -246,3 +247,27 @@ class TestConfigId:
 
     def test_index_dir_hangs_it_off_the_base(self, tmp_path: Path) -> None:
         assert index_dir(tmp_path, "sentence:5:1", "mpnet") == tmp_path / "sentence_5_1__mpnet"
+
+
+class TestOpenMPPinning:
+    """OpenMP must stay pinned to one thread; see :mod:`app` for why.
+
+    faiss and torch each bring their own runtime, and letting both spin up
+    thread pools crashes the process with no traceback — during embedding, or
+    during search, depending on which loaded first. The failure needs real
+    load, so nothing else in this suite would catch a regression here.
+    """
+
+    def test_openmp_is_pinned_to_one_thread(self) -> None:
+        assert os.environ.get("OMP_NUM_THREADS") == "1", (
+            "importing app must pin OMP_NUM_THREADS=1 — without it faiss and "
+            "torch segfault when both do real work in one process"
+        )
+
+    def test_search_survives_a_loaded_torch(self, chunks: list[Chunk]) -> None:
+        """The crash direction a store-only test would otherwise never reach."""
+        import torch  # noqa: F401
+
+        store = FaissStore()
+        store.add(chunks)
+        assert len(store.search(np.asarray(chunks[0].embedding, dtype=np.float32), top_k=2)) == 2
