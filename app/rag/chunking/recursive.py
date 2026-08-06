@@ -1,4 +1,4 @@
-"""Recursive character splitting — the one strategy with no mp3 ancestor.
+"""Recursive character splitting: respect the author's structure where it fits.
 
 Descends a list of separators from coarsest to finest, splitting only what is
 still too large: paragraphs first, then lines, then sentence-ish boundaries,

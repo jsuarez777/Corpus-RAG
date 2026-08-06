@@ -1,8 +1,8 @@
 """Typed payloads passed between pipeline stages.
 
 These are the interfaces the components are graded on: every chunker, embedder,
-retriever, reranker and LLM consumes and returns these models rather than the
-plain dicts mp3 used, so implementations swap without callers changing.
+retriever, reranker and LLM consumes and returns these models rather than plain
+dicts, so implementations swap without callers changing.
 
 Scores are deliberately left unbounded — cosine similarity over normalized
 vectors is [-1, 1], BM25 is unbounded positive, and rerankers use their own

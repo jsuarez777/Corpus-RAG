@@ -10,7 +10,7 @@ Usage:
     python app/extract.py data/working_set         # every PDF in a folder
     python app/extract.py paper.pdf --loader pymupdf --force
 
-With no path argument it prompts, mp3-style, so it is usable without
+With no path argument it prompts interactively, so it is usable without
 remembering any flags.
 """
 

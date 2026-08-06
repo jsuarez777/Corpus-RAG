@@ -1,13 +1,13 @@
 """Sentence-boundary chunking: N sentences per chunk, with sentence overlap.
 
 Chunks never split mid-sentence, so an embedded chunk is always readable text.
-Two guards from mp3 that earn their keep on this corpus:
+Two guards earn their keep on this corpus:
 
 * a **token cap** derived from the sentence count, so one flattened table
   cannot inflate a chunk to ten times its neighbours;
-* an optional **token floor** (mp3's ``sentence-dynamic-min``), which keeps
-  absorbing sentences past the count until the floor is met, so a run of short
-  fragments packs into one usable chunk instead of several useless ones.
+* an optional **token floor** (the dynamic-minimum mode), which keeps absorbing
+  sentences past the count until the floor is met, so a run of short fragments
+  packs into one usable chunk instead of several useless ones.
 """
 
 from __future__ import annotations
@@ -71,8 +71,8 @@ def group_sentences(
 class SentenceChunker(BaseChunker):
     """Groups whole sentences into chunks.
 
-    With ``dynamic_min=True`` this is mp3's ``sentence-dynamic-min`` strategy;
-    the two are one class because they differ only in whether the floor applies.
+    ``dynamic_min=True`` selects the token-floor variant; the two are one class
+    because they differ only in whether the floor applies.
     """
 
     name = "sentence"

@@ -6,9 +6,9 @@ marker in the answer back to a chunk. So context building and citation parsing
 must be handed the same list, in the same order — :mod:`app.rag.generation.citations`
 takes the results list rather than a mapping for exactly that reason.
 
-Numbered context is mp4's Challenge 5 Approach 2. The alternative — asking for
-``(filename, page)`` and regexing it back out — depends on the model copying a
-string correctly; a small integer index does not.
+Numbering is what makes that contract cheap to honour. The alternative — asking
+for ``(filename, page)`` and regexing it back out — depends on the model copying
+a string correctly; a small integer index does not.
 
 Prompt text is kept in ``prompts/answer/vN/`` rather than in this module so a
 prompt revision is a diffable file with a version number that can be recorded
@@ -26,7 +26,7 @@ from app.rag.models import RetrievalResult
 
 log = logging.getLogger(__name__)
 
-# app/rag/generation/prompts.py -> miniproject4/ is three levels up.
+# app/rag/generation/prompts.py -> the project root is four levels up.
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 PROMPTS_DIR = PROJECT_ROOT / "prompts" / "answer"
 

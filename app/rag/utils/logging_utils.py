@@ -1,12 +1,12 @@
-"""Shared logging setup: stdout plus a timestamped file under logs/, mp2-style."""
+"""Shared logging setup: stdout plus a timestamped file under logs/."""
 
 import logging
 import sys
 import time
 from pathlib import Path
 
-# app/rag/utils/logging_utils.py -> miniproject4/ is four levels up. Update the
-# index if this module moves; logs would otherwise land in a nested logs/ dir.
+# app/rag/utils/logging_utils.py -> the project root is four levels up. Update
+# the index if this module moves; logs would otherwise land in a nested logs/.
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 LOGS_DIR = PROJECT_ROOT / "logs"
 

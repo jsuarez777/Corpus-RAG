@@ -1,8 +1,7 @@
 """Sentence segmentation with trustworthy offsets.
 
-Ported from mp3's ``segment_sentences``. Shared by the sentence chunker and,
-later, the semantic one — both need the same guarantee: every sentence knows
-exactly where it sits in the source text.
+Shared by the sentence and semantic chunkers — both need the same guarantee:
+every sentence knows exactly where it sits in the source text.
 """
 
 from __future__ import annotations
@@ -11,7 +10,7 @@ from dataclasses import dataclass
 
 from app.rag.chunking._tokens import token_starts
 
-# Sentence-chunk sizing, calibrated in mp3 against a pdfplumber corpus
+# Sentence-chunk sizing, calibrated against an academic-prose corpus
 # (mean ~34.5 words/sentence, ~1.3 cl100k tokens/word for English prose).
 SENT_AVG_WORDS = 35
 SENT_MIN_WORDS = 15

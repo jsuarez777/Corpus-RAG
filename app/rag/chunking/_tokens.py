@@ -1,8 +1,8 @@
 """Token counting and the token-index -> char-offset map.
 
-Ported from mp3's ``chunk_text.py``. Every chunker cuts on token counts but
-must report char offsets, and :func:`token_starts` is the bridge — it is the
-one function the whole offset discipline rests on.
+Every chunker cuts on token counts but must report char offsets, and
+:func:`token_starts` is the bridge — it is the one function the whole offset
+discipline rests on.
 
 The encoding is ``cl100k_base`` throughout, so a chunk's token count means the
 same thing at chunking time as it does at embedding time.
