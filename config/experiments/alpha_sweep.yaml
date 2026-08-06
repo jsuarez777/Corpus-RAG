@@ -1,0 +1,21 @@
+# How much of the hybrid score should come from dense retrieval?
+#
+# alpha=0 is pure BM25 and alpha=1 is pure dense, so this sweep also produces
+# both single-retriever baselines without a separate run. Held to one chunker
+# and one embedder: the point is to isolate alpha, and sweeping it inside the
+# full grid would produce 60 runs whose differences are mostly not alpha.
+name: alpha_sweep
+
+defaults:
+  chunker: sentence:5:1
+  embedder: minilm
+  top_k: 10
+
+grid:
+  retriever:
+    - hybrid:0.0            # pure sparse
+    - hybrid:0.3
+    - hybrid:0.5
+    - hybrid:0.7
+    - hybrid:1.0            # pure dense
+    - hybrid:0.5:rrf        # rank fusion instead of score fusion, for comparison

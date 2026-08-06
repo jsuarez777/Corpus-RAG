@@ -1,0 +1,27 @@
+# The spec's required grid: 3 chunking x 2 embedding x 2 retrieval = 12 configs.
+#
+# Retrieval is dense and hybrid, not dense and bm25, because hybrid *contains*
+# bm25 at alpha=0 and the alpha sweep explores that axis properly. BM25 alone is
+# still worth having as a baseline, so it is pinned into grid_baselines.yaml
+# rather than spending grid slots here.
+#
+# top_k is 10 rather than 5: the deepest metric measured is @10, and retrieving
+# fewer than the deepest k caps it at whatever was fetched.
+name: grid_12
+
+defaults:
+  loader: pymupdf
+  store: faiss
+  top_k: 10
+
+grid:
+  chunker:
+    - fixed_size:512:128    # the baseline; one paragraph-ish window
+    - sentence:5:1          # small pieces, never split mid-sentence
+    - semantic:512:90       # same cap as fixed_size, boundaries chosen by meaning
+  embedder:
+    - minilm                # 384d, fast
+    - mpnet                 # 768d, stronger and ~3x slower
+  retriever:
+    - dense
+    - hybrid:0.5

@@ -1,0 +1,13 @@
+# The baseline pipeline. Every field here is also the code default, so this
+# file doubles as documentation of what you get with no config at all.
+name: default
+
+loader: pymupdf
+clean: default          # ligatures, de-hyphenation, reflow, continuation merge
+
+chunker: fixed_size:512:128
+embedder: minilm        # or: mpnet
+store: faiss
+
+retriever: hybrid:0.5   # or: dense, bm25, hybrid:0.3:rrf
+top_k: 5
