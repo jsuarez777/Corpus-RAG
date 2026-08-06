@@ -79,6 +79,10 @@ Thumbs.db
 *.swo
 *~
 
+# Local agent tooling and settings
+.claude/
+.agents/
+
 # Claude Code - local settings (personal/machine-specific)
 .claude/settings.local.json
 

@@ -1,0 +1,14 @@
+# Development-only tooling (not required to run the pipeline).
+# Install with: pip install -r requirements-dev.txt
+#
+# Exercised tools are pinned, matching requirements.txt: a pytest or ruff major
+# bump should not make a clean checkout look broken.
+
+# --- Test and lint ---
+pytest==9.1.1
+ruff==0.16.1
+
+# --- Visualizations (app/visualize.py) ---
+matplotlib>=3.7        # NOT YET USED: the six required charts
+pandas>=2.0            # NOT YET USED: results tables
+seaborn>=0.12          # NOT YET USED: heatmaps
