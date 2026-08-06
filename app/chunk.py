@@ -28,7 +28,14 @@ if __package__ in (None, ""):  # `python app/chunk.py` runs this as a script
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.rag.base import BaseChunker  # noqa: E402
-from app.rag.chunking import CHUNKERS, chunker_from_spec, config_slug, save_chunks  # noqa: E402
+from app.rag.chunking import (  # noqa: E402
+    CHUNKERS,
+    chunker_from_spec,
+    config_slug,
+    needs_embedder,
+    save_chunks,
+)
+from app.rag.embedding import DEFAULT_EMBEDDER, EMBEDDERS, get_embedder  # noqa: E402
 from app.rag.loaders import load_documents  # noqa: E402
 from app.rag.models import Chunk, Document  # noqa: E402
 from app.rag.utils.logging_utils import setup_logging  # noqa: E402
@@ -169,6 +176,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "-o", "--out", type=Path, default=DEFAULT_OUT, help=f"default: {DEFAULT_OUT}"
     )
+    parser.add_argument(
+        "-e",
+        "--embedder",
+        choices=sorted(EMBEDDERS),
+        default=DEFAULT_EMBEDDER,
+        help=f"only used by embedder-dependent chunkers (default: {DEFAULT_EMBEDDER})",
+    )
     parser.add_argument("--limit", type=int, help="stop after N documents")
     return parser.parse_args(argv)
 
@@ -191,13 +205,18 @@ def main(argv: list[str] | None = None) -> int:
         documents = documents[: args.limit]
 
     spec = args.spec or choose_spec()
+    # Loading an embedding model costs a download and a few seconds, so only
+    # the strategies that actually consume one pay for it — and only those
+    # record it in the filename.
     try:
-        chunker = chunker_from_spec(spec)
+        embedder_name = args.embedder if needs_embedder(spec.partition(":")[0]) else None
+        embedder = get_embedder(embedder_name) if embedder_name else None
+        chunker = chunker_from_spec(spec, embedder=embedder)
     except (ValueError, TypeError) as exc:
         log.error(f"Bad chunker spec {spec!r}: {exc}")
         return 1
 
-    target = args.out / f"{config_slug(spec)}.json"
+    target = args.out / f"{config_slug(spec, embedder_name)}.json"
     log.info(f"\n{len(documents)} document(s) via {chunker!r} -> {_display(target)}")
     if interactive and _ask("Proceed? (y/n)", "y").lower() not in {"y", "yes"}:
         log.info("Cancelled.")
@@ -213,7 +232,7 @@ def main(argv: list[str] | None = None) -> int:
         # Loud, and a failing exit code: every downstream citation is suspect.
         log.error(f"OFFSET MISMATCH on {broken}/{len(chunks)} chunks — do not use this output.")
 
-    path = save_chunks(chunks, args.out, spec)
+    path = save_chunks(chunks, args.out, spec, embedder_name)
     log.info(f"\n{summarize(chunks)}")
     log.info(f"Wrote {_display(path)}")
     return 1 if broken else 0

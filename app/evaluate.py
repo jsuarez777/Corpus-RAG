@@ -27,7 +27,7 @@ if __package__ in (None, ""):  # `python app/evaluate.py` runs this as a script
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.rag.base import BaseRetriever  # noqa: E402
-from app.rag.chunking import config_slug, load_chunks  # noqa: E402
+from app.rag.chunking import chunk_file, load_chunks  # noqa: E402
 from app.rag.embedding import DEFAULT_EMBEDDER, EMBEDDERS, get_embedder  # noqa: E402
 from app.rag.evaluation import DEFAULT_KS, EvaluationResult, build_relevance, evaluate  # noqa: E402
 from app.rag.evaluation.qrels import load_benchmark  # noqa: E402
@@ -196,7 +196,7 @@ def main(argv: list[str] | None = None) -> int:
     queries, qrels, answers = load_benchmark(args.benchmark)
 
     for spec in targets:
-        chunks = load_chunks(args.chunks / f"{config_slug(spec)}.json")
+        chunks = load_chunks(chunk_file(args.chunks, spec, args.embedder))
         relevance, report = build_relevance(chunks, queries, qrels, answers)
         if not relevance:
             log.error(f"{spec}: no scoreable queries — has `python app/align.py` been run?")

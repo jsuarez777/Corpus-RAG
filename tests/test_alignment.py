@@ -18,6 +18,7 @@ from uuid import uuid4
 
 import pytest
 
+from app.align import available_configs, resolve_targets
 from app.rag.evaluation import (
     SectionSpan,
     align_corpus,
@@ -348,3 +349,56 @@ class TestChunkIdentity:
         assign_sections([chunk], [SectionSpan(0, 0, 100, 10)])
         assert chunk.id == original
         assert chunk.id != uuid4()
+
+
+class TestChunkFileDiscovery:
+    """`semantic` writes one file per embedder under a single spec.
+
+    Keying discovery on the spec would collapse those into one entry, and
+    `--all` would then leave every file but the survivor unaligned — invisible
+    until an experiment scored a config whose chunks carry no section labels.
+    """
+
+    @pytest.fixture
+    def chunks_dir(self, tmp_path: Path) -> Path:
+        for stem, chunker, embedder in [
+            ("fixed_size_512_128", "fixed_size:512:128", None),
+            ("semantic_512_90__minilm", "semantic:512:90", "minilm"),
+            ("semantic_512_90__mpnet", "semantic:512:90", "mpnet"),
+        ]:
+            payload = {"chunker": chunker, "embedder": embedder, "num_chunks": 0, "chunks": []}
+            (tmp_path / f"{stem}.json").write_text(json.dumps(payload))
+        return tmp_path
+
+    def test_every_file_is_found(self, chunks_dir: Path) -> None:
+        configs = available_configs(chunks_dir)
+        assert sorted(configs) == [
+            "fixed_size_512_128",
+            "semantic_512_90__minilm",
+            "semantic_512_90__mpnet",
+        ]
+        assert configs["semantic_512_90__mpnet"].embedder == "mpnet"
+        assert configs["fixed_size_512_128"].embedder is None
+
+    def test_a_bare_spec_selects_both_embedders(self, chunks_dir: Path) -> None:
+        configs = available_configs(chunks_dir)
+        assert resolve_targets("semantic:512:90", configs) == [
+            "semantic_512_90__minilm",
+            "semantic_512_90__mpnet",
+        ]
+
+    def test_a_stem_selects_exactly_one(self, chunks_dir: Path) -> None:
+        configs = available_configs(chunks_dir)
+        assert resolve_targets("semantic_512_90__mpnet", configs) == ["semantic_512_90__mpnet"]
+
+    def test_an_unknown_request_selects_nothing(self, chunks_dir: Path) -> None:
+        assert resolve_targets("nope:1", available_configs(chunks_dir)) == []
+
+    def test_label_names_the_embedder(self, chunks_dir: Path) -> None:
+        configs = available_configs(chunks_dir)
+        assert str(configs["semantic_512_90__minilm"]) == "semantic:512:90 @minilm"
+        assert str(configs["fixed_size_512_128"]) == "fixed_size:512:128"
+
+    def test_an_unreadable_file_is_skipped_not_fatal(self, chunks_dir: Path) -> None:
+        (chunks_dir / "truncated.json").write_text("{not json")
+        assert "truncated" not in available_configs(chunks_dir)

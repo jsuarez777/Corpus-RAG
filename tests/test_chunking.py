@@ -8,6 +8,7 @@ a quote that doesn't match its source. It is asserted for each strategy below,
 plus once over a real extracted paper.
 """
 
+import json
 from pathlib import Path
 
 import pytest
@@ -21,11 +22,13 @@ from app.rag.chunking import (
     SentenceChunker,
     SlidingWindowChunker,
     Span,
+    chunk_file,
     chunker_from_spec,
     config_slug,
     count_tokens,
     get_chunker,
     load_chunks,
+    needs_embedder,
     save_chunks,
     spans_to_chunks,
     token_starts,
@@ -387,6 +390,54 @@ class TestStore:
     def test_slug_is_filename_safe(self) -> None:
         assert config_slug("fixed_size:512:25%") == "fixed_size_512_25pct"
         assert config_slug("sentence:5:1") == "sentence_5_1"
+
+    def test_slug_appends_the_embedder_when_given_one(self) -> None:
+        assert config_slug("semantic:512:90", "minilm") == "semantic_512_90__minilm"
+        assert config_slug("semantic:512:90", "mpnet") == "semantic_512_90__mpnet"
+        # No embedder means no suffix: the shared cache must keep its name.
+        assert config_slug("semantic:512:90") == "semantic_512_90"
+
+    def test_embedder_survives_the_round_trip(self, document: Document, tmp_path: Path) -> None:
+        """Alignment rewrites these files in place and needs the name back."""
+        chunks = FixedSizeChunker(chunk_size=64, overlap=16).chunk(document)
+        path = save_chunks(chunks, tmp_path, "semantic:512:90", "mpnet")
+
+        assert path.name == "semantic_512_90__mpnet.json"
+        payload = json.loads(path.read_text())
+        assert payload["chunker"] == "semantic:512:90"
+        assert payload["embedder"] == "mpnet"
+
+    def test_embedder_is_recorded_as_none_when_absent(
+        self, document: Document, tmp_path: Path
+    ) -> None:
+        chunks = FixedSizeChunker(chunk_size=64, overlap=16).chunk(document)
+        path = save_chunks(chunks, tmp_path, "fixed_size:64:16")
+        assert json.loads(path.read_text())["embedder"] is None
+
+    def test_chunk_file_ignores_the_embedder_for_shared_configs(self, tmp_path: Path) -> None:
+        """Indexing passes its embedder for every config; only some may use it.
+
+        Suffixing unconditionally would send `fixed_size:512:128` looking for
+        `fixed_size_512_128__mpnet.json`, which chunking never writes.
+        """
+        assert chunk_file(tmp_path, "fixed_size:512:128", "mpnet").name == "fixed_size_512_128.json"
+        assert chunk_file(tmp_path, "sentence:5:1", "minilm").name == "sentence_5_1.json"
+
+    def test_chunk_file_names_the_embedder_for_semantic(self, tmp_path: Path) -> None:
+        minilm = chunk_file(tmp_path, "semantic:512:90", "minilm")
+        mpnet = chunk_file(tmp_path, "semantic:512:90", "mpnet")
+        assert minilm.name == "semantic_512_90__minilm.json"
+        assert mpnet != minilm, "the two must not share a file — their chunks differ"
+
+    def test_chunk_file_rejects_an_unknown_chunker(self, tmp_path: Path) -> None:
+        with pytest.raises(ValueError, match="Unknown chunker"):
+            chunk_file(tmp_path, "nope:1", "minilm")
+
+    def test_only_semantic_declares_an_embedder(self) -> None:
+        assert needs_embedder("semantic")
+        assert not any(needs_embedder(name) for name in CHUNKERS if name != "semantic"), (
+            "a new embedder-dependent chunker needs the embedder in its filenames too"
+        )
 
 
 class TestChunkCLI:

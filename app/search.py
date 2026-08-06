@@ -29,7 +29,7 @@ if __package__ in (None, ""):  # `python app/search.py` runs this as a script
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.rag.base import BaseRetriever  # noqa: E402
-from app.rag.chunking import config_slug, load_chunks  # noqa: E402
+from app.rag.chunking import chunk_file, load_chunks  # noqa: E402
 from app.rag.embedding import DEFAULT_EMBEDDER, EMBEDDERS, get_embedder  # noqa: E402
 from app.rag.models import RetrievalResult  # noqa: E402
 from app.rag.retrieval import (  # noqa: E402
@@ -89,15 +89,15 @@ def build_retrievers(
             f"No index at {_display(target)} — run `python app/index.py {spec} -e {embedder_name}`."
         )
 
-    chunk_file = chunks_dir / f"{config_slug(spec)}.json"
-    if not chunk_file.is_file():
-        raise SystemExit(f"No chunks at {_display(chunk_file)} — run `python app/chunk.py {spec}`.")
+    path = chunk_file(chunks_dir, spec, embedder_name)
+    if not path.is_file():
+        raise SystemExit(f"No chunks at {_display(path)} — run `python app/chunk.py {spec}`.")
 
     embedder = get_embedder(embedder_name)
     dense = DenseRetriever(open_store(target), embedder)
 
     started = time.perf_counter()
-    sparse = BM25Retriever(load_chunks(chunk_file))
+    sparse = BM25Retriever(load_chunks(path))
     log.info(f"BM25 fitted in {time.perf_counter() - started:.2f}s")
 
     return {"dense": dense, "bm25": sparse, "hybrid": HybridRetriever(dense, sparse)}

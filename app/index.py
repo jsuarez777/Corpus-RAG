@@ -27,7 +27,7 @@ if __package__ in (None, ""):  # `python app/index.py` runs this as a script
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.rag.base import BaseEmbedder  # noqa: E402
-from app.rag.chunking import config_slug, load_chunks  # noqa: E402
+from app.rag.chunking import chunk_file, load_chunks  # noqa: E402
 from app.rag.embedding import DEFAULT_EMBEDDER, EMBEDDERS, get_embedder  # noqa: E402
 from app.rag.models import Chunk  # noqa: E402
 from app.rag.stores import get_store, index_dir  # noqa: E402
@@ -173,9 +173,14 @@ def main(argv: list[str] | None = None) -> int:
         args.embedder if not interactive else _choose("Which embedder?", sorted(EMBEDDERS))
     )
 
-    path = specs.get(spec) or args.input / f"{config_slug(spec)}.json"
+    # Resolved through chunk_file, not the `chunker` field: a config that names
+    # an embedder has two files carrying the same spec, so that field cannot
+    # tell them apart.
+    path = chunk_file(args.input, spec, embedder_name)
     if not path.is_file():
-        log.error(f"No chunks for {spec!r}. Available: {', '.join(sorted(specs))}")
+        log.error(
+            f"No chunks at {_display(path)} — run `python app/chunk.py {spec} -e {embedder_name}`."
+        )
         return 1
 
     target = index_dir(args.out, spec, embedder_name)

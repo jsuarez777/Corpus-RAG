@@ -11,6 +11,7 @@ Two ways in, both of which avoid importing a concrete class at a call site:
 from __future__ import annotations
 
 from inspect import Parameter, signature
+from pathlib import Path
 
 from app.rag.base import BaseChunker
 from app.rag.chunking._sentences import Sentence, segment_sentences
@@ -40,6 +41,29 @@ def _resolve(name: str) -> type[BaseChunker]:
     except KeyError:
         available = ", ".join(sorted(CHUNKERS))
         raise ValueError(f"Unknown chunker {name!r}. Available: {available}") from None
+
+
+def needs_embedder(name: str) -> bool:
+    """True for strategies whose boundaries depend on an embedding model.
+
+    Only ``semantic`` does, and the consequence reaches disk: its chunks are
+    not shared across embedders the way every other strategy's are, so its
+    files need the embedder in the name. Callers ask this rather than testing
+    the name, which would go stale the moment a second such strategy exists.
+    """
+    return "embedder" in signature(_resolve(name).__init__).parameters
+
+
+def chunk_file(chunks_dir: Path, spec: str, embedder: str | None = None) -> Path:
+    """Path to ``spec``'s chunk file, naming ``embedder`` only where it matters.
+
+    Every stage that reads ``data/chunks/`` goes through here, so the rule for
+    which configs name an embedder lives in one place: a caller that built the
+    filename itself would silently read `semantic`'s minilm chunks while
+    searching an mpnet index.
+    """
+    named = embedder if (embedder and needs_embedder(spec.partition(":")[0])) else None
+    return Path(chunks_dir) / f"{config_slug(spec, named)}.json"
 
 
 def _inject(chunker_cls: type[BaseChunker], embedder: object | None) -> dict:
@@ -122,11 +146,13 @@ __all__ = [
     "SentenceChunker",
     "SlidingWindowChunker",
     "Span",
+    "chunk_file",
     "chunker_from_spec",
     "config_slug",
     "count_tokens",
     "get_chunker",
     "load_chunks",
+    "needs_embedder",
     "resolve_overlap",
     "save_chunks",
     "segment_sentences",

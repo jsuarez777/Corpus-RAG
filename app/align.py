@@ -19,6 +19,7 @@ import argparse
 import json
 import logging
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 if __package__ in (None, ""):  # `python app/align.py` runs this as a script
@@ -53,15 +54,44 @@ def _ask(prompt: str, default: str) -> str:
         raise SystemExit("Cancelled.") from None
 
 
-def available_specs(chunks_dir: Path) -> dict[str, Path]:
-    """Chunker specs on disk, keyed by the verbatim spec string."""
-    found: dict[str, Path] = {}
+@dataclass(frozen=True)
+class ChunkFile:
+    """One file under data/chunks/, and the config that produced it."""
+
+    path: Path
+    chunker: str
+    embedder: str | None
+
+    def __str__(self) -> str:
+        return f"{self.chunker} @{self.embedder}" if self.embedder else self.chunker
+
+
+def available_configs(chunks_dir: Path) -> dict[str, ChunkFile]:
+    """Chunk files on disk, keyed by filename stem.
+
+    Keyed by stem rather than by spec because ``semantic`` writes one file per
+    embedder under a single spec — keying on the spec would silently drop all
+    but one of them, and `--all` would leave the rest unaligned.
+    """
+    found: dict[str, ChunkFile] = {}
     for path in sorted(chunks_dir.glob("*.json")):
         try:
-            found[json.loads(path.read_text())["chunker"]] = path
+            payload = json.loads(path.read_text())
+            found[path.stem] = ChunkFile(path, payload["chunker"], payload.get("embedder"))
         except (json.JSONDecodeError, KeyError, OSError):
             log.warning(f"Skipping unreadable chunk file {_display(path)}")
     return found
+
+
+def resolve_targets(requested: str, configs: dict[str, ChunkFile]) -> list[str]:
+    """Stems matching ``requested``, which may be a stem or a bare spec.
+
+    A bare spec can match more than one file — `semantic:512:90` names both
+    embedders' output — and aligning all of them is what the caller meant.
+    """
+    if requested in configs:
+        return [requested]
+    return sorted(stem for stem, config in configs.items() if config.chunker == requested)
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -92,23 +122,23 @@ def main(argv: list[str] | None = None) -> int:
         log.error(f"No documents at {_display(args.docs)} — run `python app/extract.py` first.")
         return 1
 
-    specs = available_specs(args.chunks)
-    if not specs:
+    configs = available_configs(args.chunks)
+    if not configs:
         log.error(f"{_display(args.chunks)} holds no chunk files — run `python app/chunk.py`.")
         return 1
 
     if args.all:
-        targets = sorted(specs)
+        targets = sorted(configs)
     elif args.spec:
-        if args.spec not in specs:
-            log.error(f"No chunks for {args.spec!r}. Available: {', '.join(sorted(specs))}")
+        targets = resolve_targets(args.spec, configs)
+        if not targets:
+            log.error(f"No chunks for {args.spec!r}. Available: {', '.join(sorted(configs))}")
             return 1
-        targets = [args.spec]
     else:
-        options = sorted(specs)
+        options = sorted(configs)
         print("\nWhich chunk config?")
         for number, option in enumerate(options, start=1):
-            print(f"  {number}. {option}")
+            print(f"  {number}. {configs[option]}")
         print(f"  {len(options) + 1}. all")
         choice = _ask("Choice", "1")
         targets = (
@@ -116,9 +146,7 @@ def main(argv: list[str] | None = None) -> int:
             if choice == str(len(options) + 1)
             else [options[int(choice) - 1]]
             if choice.isdigit() and 1 <= int(choice) <= len(options)
-            else [choice]
-            if choice in specs
-            else []
+            else resolve_targets(choice, configs)
         )
         if not targets:
             log.error("Not a listed option.")
@@ -127,10 +155,11 @@ def main(argv: list[str] | None = None) -> int:
     log.info(f"{len(documents)} documents | corpus {_display(args.corpus)}\n")
 
     unlabelled_total = 0
-    for spec in targets:
-        chunks = load_chunks(specs[spec])
+    for stem in targets:
+        config = configs[stem]
+        chunks = load_chunks(config.path)
         report = align_corpus(documents, chunks, args.corpus)
-        log.info(f"{spec}\n  {report.summary()}")
+        log.info(f"{config}\n  {report.summary()}")
 
         unlabelled = report.chunks_total - report.chunks_labelled
         unlabelled_total += unlabelled
@@ -144,8 +173,10 @@ def main(argv: list[str] | None = None) -> int:
             log.warning(f"  {unlabelled} chunk(s) matched no section")
 
         if not args.dry_run:
-            save_chunks(chunks, args.chunks, spec)
-            log.info(f"  wrote {_display(specs[spec])}")
+            # Round-trips the embedder too, so the rewrite lands on the file it
+            # came from rather than on the embedder-less name.
+            save_chunks(chunks, args.chunks, config.chunker, config.embedder)
+            log.info(f"  wrote {_display(config.path)}")
 
     if args.dry_run:
         log.info("\nDry run — nothing written.")
