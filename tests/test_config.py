@@ -13,11 +13,13 @@ completion and answers the wrong question. Two guards get the most attention:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
+from app.evaluate import group_by_index, write_grid_result
 from app.rag.chunking import FixedSizeChunker, SemanticChunker
 from app.rag.config import (
     DEFAULT_TOP_K,
@@ -33,6 +35,7 @@ from app.rag.config import (
     load_grid,
 )
 from app.rag.embedding import SentenceTransformerEmbedder
+from app.rag.evaluation import EvaluationResult
 from app.rag.loaders import PyMuPDFLoader
 from app.rag.models import Chunk, ChunkMetadata
 from app.rag.retrieval import BM25Retriever, DenseRetriever, HybridRetriever
@@ -272,6 +275,33 @@ class TestBuilding:
         with pytest.raises(ValueError, match="needs a vector store"):
             build_retriever(PipelineConfig(retriever="dense"))
 
+    def test_a_prefitted_bm25_is_reused_rather_than_refitted(self) -> None:
+        """alpha_sweep is six cells over one chunk set; fitting per cell is
+        six identical builds of the same index."""
+        sparse = BM25Retriever(make_chunks())
+        retriever = build_retriever(
+            PipelineConfig(retriever="hybrid:0.3"),
+            store=FaissStore(dimension=384),
+            sparse=sparse,
+        )
+        assert retriever._sparse is sparse
+
+    def test_a_prefitted_bm25_satisfies_the_bm25_retriever_too(self) -> None:
+        sparse = BM25Retriever(make_chunks())
+        assert build_retriever(PipelineConfig(retriever="bm25"), sparse=sparse) is sparse
+
+    def test_bm25_options_get_their_own_instance(self) -> None:
+        """Shared fits carry the default parameters; a config that changes them
+        is asking for a different index, not the cached one."""
+        sparse = BM25Retriever(make_chunks())
+        retriever = build_retriever(
+            PipelineConfig(retriever={"name": "bm25", "stem": False}),
+            chunks=make_chunks(),
+            sparse=sparse,
+        )
+        assert retriever is not sparse
+        assert retriever.stem is False
+
     def test_a_missing_chunk_list_is_named_too(self) -> None:
         with pytest.raises(ValueError, match="needs the chunks"):
             build_retriever(PipelineConfig(retriever="bm25"))
@@ -279,3 +309,67 @@ class TestBuilding:
     def test_an_unknown_retriever_lists_the_real_ones(self) -> None:
         with pytest.raises(ValueError, match="Available: dense, bm25, hybrid"):
             build_retriever(PipelineConfig(retriever="colbert"), store=FaissStore(dimension=384))
+
+
+class TestGridGrouping:
+    """The grid's cost is loading indices, not scoring queries.
+
+    grid_12 is twelve cells over six indices. Grouping them wrong does not
+    produce wrong numbers — it produces the right numbers twice as slowly,
+    which is exactly the kind of regression nothing else would catch.
+    """
+
+    def test_the_shipped_grid_groups_into_six_index_loads(self) -> None:
+        groups = group_by_index(load_grid(CONFIG_DIR / "experiments" / "grid_12.yaml"))
+        assert len(groups) == 6
+        assert all(len(cells) == 2 for cells in groups.values())
+
+    def test_the_alpha_sweep_is_a_single_load(self) -> None:
+        groups = group_by_index(load_grid(CONFIG_DIR / "experiments" / "alpha_sweep.yaml"))
+        assert len(groups) == 1
+        assert len(next(iter(groups.values()))) == 6
+
+    def test_every_cell_survives_the_grouping(self) -> None:
+        configs = load_grid(CONFIG_DIR / "experiments" / "grid_12.yaml")
+        grouped = [c for cells in group_by_index(configs).values() for c in cells]
+        assert sorted(c.id for c in grouped) == sorted(c.id for c in configs)
+
+    def test_cells_in_a_group_agree_on_chunker_and_embedder(self) -> None:
+        """run_grid reads the chunk file and index from the first cell of each
+        group and applies them to the rest."""
+        for cells in group_by_index(
+            load_grid(CONFIG_DIR / "experiments" / "grid_12.yaml")
+        ).values():
+            assert len({(c.chunker.spec, c.embedder.spec) for c in cells}) == 1
+
+    def test_grouping_is_stable_for_an_empty_grid(self) -> None:
+        assert group_by_index([]) == {}
+
+
+class TestGridResults:
+    def test_a_result_file_carries_the_whole_config(self, tmp_path: Path) -> None:
+        """A number that cannot name the loader that produced it is not
+        reproducible, which is the only reason the file exists."""
+        config = PipelineConfig(chunker="semantic:512:90", embedder="mpnet", retriever="hybrid:0.3")
+        path = write_grid_result(tmp_path, config, EvaluationResult(), "60 papers", (1, 5))
+
+        payload = json.loads(path.read_text())
+        assert payload["config"]["loader"]["name"] == "pymupdf"
+        assert payload["config_id"] == config.id
+        assert payload["index_id"] == config.index_id
+        assert payload["corpus"] == "60 papers"
+
+    def test_the_filename_identifies_the_cell(self, tmp_path: Path) -> None:
+        config = PipelineConfig(chunker="sentence:5:1", embedder="minilm", retriever="hybrid:0.5")
+        path = write_grid_result(tmp_path, config, EvaluationResult(), "", (1,))
+        assert path.stem.endswith("sentence_5_1__minilm__hybrid_0.5")
+
+    def test_two_cells_of_one_index_do_not_collide(self, tmp_path: Path) -> None:
+        shared = {"chunker": "sentence:5:1", "embedder": "minilm"}
+        written = {
+            write_grid_result(
+                tmp_path, PipelineConfig(**shared, retriever=r), EvaluationResult(), "", (1,)
+            ).name
+            for r in ("dense", "hybrid:0.5")
+        }
+        assert len(written) == 2

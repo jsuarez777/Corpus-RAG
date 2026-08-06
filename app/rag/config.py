@@ -249,12 +249,17 @@ def build_retriever(
     store: BaseVectorStore | None = None,
     chunks: list[Chunk] | None = None,
     embedder: BaseEmbedder | None = None,
+    sparse: BM25Retriever | None = None,
 ) -> BaseRetriever:
     """Assemble the retriever this config names.
 
     ``store`` is required for anything with a dense half, ``chunks`` for
     anything with a sparse half; hybrid needs both. Raising here beats a
     ``NoneType`` error thirty seconds into a grid run.
+
+    ``sparse`` lets a caller hand over an already-fitted BM25. Fitting depends
+    only on the chunks, so a sweep varying nothing but alpha would otherwise
+    rebuild the same index once per cell.
     """
     name = config.retriever.name
     options = dict(config.retriever.kwargs)
@@ -274,7 +279,9 @@ def build_retriever(
             raise ValueError(f"Retriever {name!r} needs a vector store")
         return DenseRetriever(store, embedder or build_embedder(config))
 
-    def sparse() -> BM25Retriever:
+    def fitted_sparse() -> BM25Retriever:
+        if sparse is not None:
+            return sparse
         if chunks is None:
             raise ValueError(f"Retriever {name!r} needs the chunks to fit BM25 on")
         return BM25Retriever(chunks)
@@ -282,9 +289,15 @@ def build_retriever(
     if name == "dense":
         return dense()
     if name == "bm25":
-        return BM25Retriever(chunks, **options) if chunks is not None else sparse()
+        # Options here are BM25's own (k1, b, stem), so a config that sets them
+        # gets its own instance rather than the shared one.
+        if options:
+            if chunks is None:
+                raise ValueError(f"Retriever {name!r} needs the chunks to fit BM25 on")
+            return BM25Retriever(chunks, **options)
+        return fitted_sparse()
     if name == "hybrid":
-        return HybridRetriever(dense(), sparse(), **options)
+        return HybridRetriever(dense(), fitted_sparse(), **options)
     raise ValueError(f"Unknown retriever {name!r}. Available: dense, bm25, hybrid")
 
 
