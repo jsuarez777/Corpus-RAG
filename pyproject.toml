@@ -1,6 +1,10 @@
 [tool.pytest.ini_options]
 markers = [
     "slow: loads or downloads a model; deselect with -m 'not slow'",
+    # Distinct from `slow`: these cost money rather than time, so a marker is
+    # not enough — they also skip unless JUDGE_CALIBRATION=1 is set, and a
+    # plain `pytest` must never spend anything.
+    "paid: makes billed API calls; run with JUDGE_CALIBRATION=1",
 ]
 
 [tool.ruff]

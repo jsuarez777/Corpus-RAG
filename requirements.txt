@@ -39,7 +39,10 @@ openai==2.52.0         # responses API, behind app/rag/generation/llm.py. Pinned
                        #   because instructor 1.15 requires openai>=2, and the
                        #   old 1.0 floor let pip walk back to instructor 1.2,
                        #   which pins pydantic==2.7.0.
-instructor>=1.15       # NOT YET USED: structured outputs for citations + LLM judge
+instructor>=1.15       # NOT YET USED: the judge gets its structured scores from
+                       #   the responses API's own strict json_schema, which
+                       #   keeps the call inside MyOpenAIClient and its token
+                       #   accounting. Kept for a future multi-provider judge.
 pydantic==2.13.4
 
 # --- Config / CLI / web ---

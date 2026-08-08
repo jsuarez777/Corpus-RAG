@@ -27,6 +27,7 @@ if __package__ in (None, ""):  # `python app/serve.py` runs this as a script
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.rag.embedding import DEFAULT_EMBEDDER, EMBEDDERS  # noqa: E402
+from app.rag.evaluation.judge import DIMENSIONS, JudgeError, LLMJudge  # noqa: E402
 from app.rag.generation import (  # noqa: E402
     DEFAULT_MODEL,
     DEFAULT_TEMPERATURE,
@@ -76,6 +77,28 @@ def show(response: QAResponse, results, width: int = 100) -> None:
         print(f"\n  ! cites non-existent passage(s): {', '.join(f'[{n}]' for n in stray)}")
 
 
+def show_score(judge: LLMJudge, response: QAResponse) -> None:
+    """Judge the answer just printed and show the four scores."""
+    try:
+        score = judge.score(response)
+    except JudgeError as error:
+        log.warning(f"Judge returned no usable score: {error}")
+        return
+
+    response.confidence = score.confidence
+    scores = "  ".join(f"{name.replace('_', ' ')} {getattr(score, name)}/5" for name in DIMENSIONS)
+    print(f"\nJudge  {scores}  avg {score.average:.2f}")
+    if score.rationale:
+        print(f"       {score.rationale}")
+
+
+def _log_usage(llm: OpenAILLM, judge: LLMJudge | None) -> None:
+    """Answers and judging are billed separately, so report them separately."""
+    log.info(llm.usage_summary())
+    if judge:
+        log.info(f"judge: {judge.llm.usage_summary()}")
+
+
 def _ask(prompt: str) -> str:
     try:
         return input(f"{prompt}: ").strip()
@@ -99,6 +122,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("-m", "--model", default=DEFAULT_MODEL)
     parser.add_argument("-t", "--temperature", type=float, default=DEFAULT_TEMPERATURE)
     parser.add_argument("-p", "--prompt-version", help="prompts/answer/vN; default: newest")
+    parser.add_argument(
+        "-j", "--judge", action="store_true", help="score the answer 1-5 on four dimensions"
+    )
+    parser.add_argument(
+        "--judge-model",
+        default=DEFAULT_MODEL,
+        help="model that grades, with --judge; a different one avoids self-grading",
+    )
     parser.add_argument("--show-context", action="store_true", help="print the numbered passages")
     parser.add_argument("-i", "--chunks", type=Path, default=DEFAULT_CHUNKS)
     parser.add_argument("-x", "--indices", type=Path, default=DEFAULT_INDICES)
@@ -138,20 +169,30 @@ def main(argv: list[str] | None = None) -> int:
         f"{spec} | {args.embedder} | {args.retriever} | {args.model} | prompt {prompt.version}"
     )
 
+    # The judge gets its own client so its tokens are costed apart from the
+    # answers', and so it can run on a different model.
+    judge = None
+    if args.judge:
+        judge = LLMJudge(OpenAILLM(model=args.judge_model))
+        log.info(f"Judging with {args.judge_model} | prompt {judge.prompt.version}")
+
     queries = [args.query] if args.query else None
     while True:
         query = queries.pop(0) if queries else _ask("\nQuestion (blank to quit)")
         if not query:
-            log.info(llm.usage_summary())
+            _log_usage(llm, judge)
             return 0
 
         results = generator.retrieve(query)
         if args.show_context:
             print(f"\n{build_context(results, passage_chars=generator.passage_chars)}")
-        show(generator.answer_from(query, results), results)
+        response = generator.answer_from(query, results)
+        show(response, results)
+        if judge:
+            show_score(judge, response)
 
         if args.query and not queries:
-            log.info(llm.usage_summary())
+            _log_usage(llm, judge)
             return 0
 
 

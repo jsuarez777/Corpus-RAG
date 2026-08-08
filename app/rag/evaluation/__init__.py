@@ -10,6 +10,14 @@ from app.rag.evaluation.alignment import (
     normalize,
     strip_math,
 )
+from app.rag.evaluation.judge import (
+    CITATION_QUALITY_FLOOR,
+    DIMENSIONS,
+    JudgeError,
+    JudgeReport,
+    JudgeScore,
+    LLMJudge,
+)
 from app.rag.evaluation.metrics import (
     DEFAULT_KS,
     EvaluationResult,
@@ -31,8 +39,14 @@ from app.rag.evaluation.qrels import (
 
 __all__ = [
     "DEFAULT_KS",
+    "CITATION_QUALITY_FLOOR",
+    "DIMENSIONS",
     "AlignmentReport",
     "EvaluationResult",
+    "JudgeError",
+    "JudgeReport",
+    "JudgeScore",
+    "LLMJudge",
     "QueryRelevance",
     "RelevanceReport",
     "SectionSpan",

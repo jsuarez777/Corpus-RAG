@@ -1,0 +1,11 @@
+Question: {question}
+
+Context passages given to the system:
+
+{context}
+
+Answer under review:
+
+{answer}
+{reference}
+Score this answer on relevance, accuracy, completeness and citation quality.
