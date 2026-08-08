@@ -20,7 +20,9 @@ Three choices worth stating:
   :data:`SCORE_SCHEMA` constrains the model to four integers and a rationale,
   so a malformed score is a request the API rejects rather than a regex that
   quietly returns 3. Dimensions are ``enum`` rather than ``minimum``/
-  ``maximum`` because strict JSON schema mode supports the former.
+  ``maximum`` because strict JSON schema mode supports the former. The schema
+  constrains decoding server-side, so it governs what the model *can* emit —
+  which is why a length bound belongs in it and not in a description.
 
 Judging is a second LLM call per answer, at temperature 0. Scores from two
 different judge models are not comparable, so the model name travels with the
@@ -62,6 +64,39 @@ CITATION_QUALITY_FLOOR = 3.5
 #: configuration reproduces the same scores.
 DEFAULT_TEMPERATURE = 0.0
 
+#: Hard ceiling on the rationale, enforced by the decoder rather than asked for.
+#: Strict mode guarantees the *structure* of a score but bounds nothing about the
+#: length of a string, and twice in 976 answers the judge produced a degenerate
+#: repetition — the failure mode Holtzman et al. (2019) named neural text
+#: degeneration, where the model locks onto one token and emits it forever. Here
+#: it was a single control character, repeated until the output limit truncated
+#: the JSON mid-escape and cost the whole score. A description cannot prevent a
+#: runaway (this one already says "one or two sentences" and was ignored);
+#: ``maxLength`` can, because it removes the tokens rather than discouraging
+#: them. 1000 is well clear of the ~730 characters a deliberately thorough
+#: rationale runs to, so only a runaway ever reaches it.
+MAX_RATIONALE_CHARS = 1000
+
+#: Backstop to :data:`MAX_RATIONALE_CHARS`, and it must sit *above* it, not
+#: below. The two caps are in different units — the schema bounds one field by
+#: character, this bounds the whole reply by token — and characters cost tokens
+#: at wildly different rates once JSON escaping is involved. Measured on a
+#: full-length 1000-character rationale, plus 34 tokens of keys and integers:
+#:
+#:     plain English         165 tokens
+#:     dense scientific      555 tokens   (escaped maths and accents, ~3x)
+#:     runaway control char 3006 tokens   (six wire characters each)
+#:
+#: The bottom row is the one that sets this number, which is the trap. A runaway
+#: needs ~3000 tokens to *reach* the schema's 1000-character limit and be closed
+#: off; cut the reply short before then and the JSON truncates mid-escape and
+#: the score is lost — the exact failure ``maxLength`` exists to prevent. Tried
+#: at 1200, sized against the legitimate rows: it scored 5 of 8 retries of the
+#: two answers lost in the 976-answer run, against 8 of 8 with no cap at all.
+#: 3500 clears the runaway bound with room, and still stops a reply that somehow
+#: escapes the schema from running to the API's own multi-thousand-token limit.
+DEFAULT_MAX_OUTPUT_TOKENS = 3500
+
 #: Strict JSON schema for one score. Hand-written rather than derived from
 #: :class:`JudgeScore` because strict mode rejects the ``minimum``/``maximum``
 #: keywords Pydantic emits for a bounded int.
@@ -74,6 +109,7 @@ SCORE_SCHEMA: dict = {
         # to numbers rather than justifying numbers it has already written.
         "rationale": {
             "type": "string",
+            "maxLength": MAX_RATIONALE_CHARS,
             "description": "One or two sentences naming what set these scores.",
         },
         **{name: {"type": "integer", "enum": list(SCALE)} for name in DIMENSIONS},
@@ -163,11 +199,13 @@ class LLMJudge:
         prompt: AnswerPrompt | None = None,
         temperature: float = DEFAULT_TEMPERATURE,
         passage_chars: int = DEFAULT_PASSAGE_CHARS,
+        max_output_tokens: int | None = DEFAULT_MAX_OUTPUT_TOKENS,
     ) -> None:
         self.llm = llm
         self.prompt = prompt or load_prompt(prompts_dir=PROMPTS_DIR)
         self.temperature = temperature
         self.passage_chars = passage_chars
+        self.max_output_tokens = max_output_tokens
 
     def score(self, response: QAResponse, *, reference: str | None = None) -> JudgeScore:
         """Score one answer. ``reference`` is the ground-truth answer, if any."""
@@ -183,6 +221,11 @@ class LLMJudge:
             system=self.prompt.system,
             temperature=self.temperature,
             text=RESPONSE_FORMAT,
+            **(
+                {}
+                if self.max_output_tokens is None
+                else {"max_output_tokens": self.max_output_tokens}
+            ),
         )
         return self._parse(raw)
 

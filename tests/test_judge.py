@@ -20,7 +20,10 @@ import pytest
 from app.rag.base import BaseLLM
 from app.rag.evaluation.judge import (
     CITATION_QUALITY_FLOOR,
+    DEFAULT_MAX_OUTPUT_TOKENS,
     DIMENSIONS,
+    MAX_RATIONALE_CHARS,
+    SCORE_SCHEMA,
     JudgeError,
     JudgeScore,
     LLMJudge,
@@ -135,6 +138,55 @@ class TestScoring:
         call = llm.kwargs[0]
         assert call["temperature"] == 0.0
         assert call["text"]["format"]["strict"] is True
+
+    def test_the_rationale_is_bounded_by_the_schema(self) -> None:
+        """The two scores lost in a 976-answer run were runaways in this
+        field: legal characters, emitted until the output limit truncated the
+        JSON mid-escape. `description` had already asked for brevity and was
+        ignored; only `maxLength` removes the tokens rather than discouraging
+        them, and it is enforced by the decoder server-side."""
+        rationale = SCORE_SCHEMA["properties"]["rationale"]
+        assert rationale["maxLength"] == MAX_RATIONALE_CHARS
+
+    def test_the_whole_reply_is_capped_too(self) -> None:
+        """The schema bounds one field; this bounds the response. A runaway in
+        any other part of the document stops costing money here."""
+        llm = StubLLM(score_json())
+        LLMJudge(llm).score(make_response())
+
+        assert llm.kwargs[0]["max_output_tokens"] == DEFAULT_MAX_OUTPUT_TOKENS
+
+    def test_the_token_cap_sits_above_the_character_cap(self) -> None:
+        """The token cap must not fire before the schema can close the string.
+
+        The two caps are in different units — characters of the decoded string
+        against tokens of the escaped JSON on the wire — and the conversion is
+        not constant. The binding case is the one the caps exist for: a runaway
+        emitting a control character that costs six wire characters each, which
+        needs ~3000 tokens to *reach* `MAX_RATIONALE_CHARS` and be cut off. Set
+        the token cap below that and it truncates the JSON mid-escape first,
+        losing the score `maxLength` would have saved. Measured directly: a cap
+        of 1200 scored 5 of 8 retries of the two answers lost in the 976-answer
+        run, where no cap at all scored 8 of 8.
+        """
+        import tiktoken
+
+        encoding = tiktoken.get_encoding("o200k_base")
+        runaway = json.dumps(
+            {
+                "rationale": chr(3) * MAX_RATIONALE_CHARS,
+                **{name: 5 for name in DIMENSIONS},
+            }
+        )
+
+        assert len(encoding.encode(runaway)) < DEFAULT_MAX_OUTPUT_TOKENS
+
+    def test_the_cap_can_be_lifted(self) -> None:
+        """Absent rather than None: the API would reject a null."""
+        llm = StubLLM(score_json())
+        LLMJudge(llm, max_output_tokens=None).score(make_response())
+
+        assert "max_output_tokens" not in llm.kwargs[0]
 
     def test_a_reference_answer_is_included_when_given(self) -> None:
         llm = StubLLM(score_json())
