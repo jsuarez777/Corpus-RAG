@@ -85,6 +85,14 @@ class Component(BaseModel):
             name = options.pop("name", None)
             if not name:
                 raise ValueError(f"Component {value!r} has no 'name'")
+            # `model_dump()` nests the options under their own key, so a config
+            # read back out of a result file arrives in that shape rather than
+            # the flat one a hand-written YAML uses. Without this the options
+            # end up wrapped in a second dict, which loses nothing loudly:
+            # `spec` quietly drops back to the bare name, and a result file
+            # says `hybrid` where the run was `hybrid:0.5`.
+            if set(options) == {"options"} and isinstance(options["options"], dict):
+                options = dict(options["options"])
             return cls(name=name, options=options)
         raise TypeError(f"Component must be a string or a mapping, got {type(value).__name__}")
 

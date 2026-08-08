@@ -37,6 +37,19 @@ from app.rag.evaluation.qrels import (
     load_benchmark,
 )
 
+# `plots` is deliberately not re-exported: it imports matplotlib, and this
+# package is on the import path of every CLI, including the ones that only
+# score. Import it as `from app.rag.evaluation import plots` where it is used.
+from app.rag.evaluation.results import (
+    RunResult,
+    available_metrics,
+    latest_per_config,
+    load_result,
+    load_results,
+    sweep_experiments,
+    varying_axes,
+)
+
 __all__ = [
     "DEFAULT_KS",
     "CITATION_QUALITY_FLOOR",
@@ -49,15 +62,20 @@ __all__ = [
     "LLMJudge",
     "QueryRelevance",
     "RelevanceReport",
+    "RunResult",
     "SectionSpan",
     "align_corpus",
     "assign_sections",
+    "available_metrics",
     "build_relevance",
     "evaluate",
     "evaluate_query",
     "hit_rate_at_k",
     "index_chunks_by_section",
+    "latest_per_config",
     "load_benchmark",
+    "load_result",
+    "load_results",
     "load_sections",
     "locate_sections",
     "ndcg_at_k",
@@ -66,4 +84,6 @@ __all__ = [
     "section_coverage_at_k",
     "reciprocal_rank",
     "strip_math",
+    "sweep_experiments",
+    "varying_axes",
 ]

@@ -45,6 +45,10 @@ instructor>=1.15       # NOT YET USED: the judge gets its structured scores from
                        #   accounting. Kept for a future multi-provider judge.
 pydantic==2.13.4
 
+# --- Figures ---
+matplotlib==3.11.1     # app/rag/evaluation/plots.py, Agg backend only
+seaborn==0.13.2        # heatmap + palettes; pulls pandas in as its own dependency
+
 # --- Config / CLI / web ---
 pyyaml==6.0.3          # config/experiments/*.yaml
 streamlit==1.60.0      # needs st.dialog + fragment-scoped rerun + width="stretch"

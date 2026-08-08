@@ -36,7 +36,7 @@ if __package__ in (None, ""):  # `python app/evaluate.py` runs this as a script
 
 from app.rag.base import BaseEmbedder, BaseRetriever  # noqa: E402
 from app.rag.chunking import chunk_file, load_chunks  # noqa: E402
-from app.rag.config import PipelineConfig, build_retriever, load_grid  # noqa: E402
+from app.rag.config import PipelineConfig, build_retriever, load_grid, read_yaml  # noqa: E402
 from app.rag.embedding import DEFAULT_EMBEDDER, EMBEDDERS, get_embedder  # noqa: E402
 from app.rag.evaluation import DEFAULT_KS, EvaluationResult, build_relevance, evaluate  # noqa: E402
 from app.rag.evaluation.qrels import load_benchmark  # noqa: E402
@@ -196,12 +196,18 @@ def write_grid_result(
     result: EvaluationResult,
     relevance_summary: str,
     ks: tuple[int, ...],
+    experiment: str = "",
 ) -> Path:
     """One JSON per grid cell, carrying the config that produced it.
 
     The whole config rather than the fields this stage happened to use: a
     result that cannot say which loader or preprocessor produced it is not
     reproducible, and that is the only reason to keep the file.
+
+    ``experiment`` names the file the cell came from. A cell can belong to two
+    of them — ``sentence:5:1 | minilm | hybrid:0.5`` is both a grid cell and the
+    midpoint of the alpha sweep — and without the name there is no way to chart
+    the grid without the sweep's five other weights crowding in beside it.
     """
     results_dir.mkdir(parents=True, exist_ok=True)
     target = results_dir / f"{time.strftime('%Y%m%d_%H%M%S')}_{config.id}.json"
@@ -211,6 +217,7 @@ def write_grid_result(
                 "config": config.model_dump(mode="json"),
                 "config_id": config.id,
                 "index_id": config.index_id,
+                "experiment": experiment,
                 "corpus": relevance_summary,
                 "ks": list(ks),
                 "num_queries": result.num_queries,
@@ -331,7 +338,8 @@ def run_from_config(args: argparse.Namespace) -> int:
 
     configs = load_grid(args.config)
     groups = group_by_index(configs)
-    log.info(f"{len(configs)} cell(s) over {len(groups)} index/indices")
+    experiment = read_yaml(args.config).get("name") or args.config.stem
+    log.info(f"{experiment}: {len(configs)} cell(s) over {len(groups)} index/indices")
 
     queries, qrels, answers = load_benchmark(args.benchmark)
     started = time.perf_counter()
@@ -339,7 +347,7 @@ def run_from_config(args: argparse.Namespace) -> int:
     def report_cell(config: PipelineConfig, result: EvaluationResult, corpus: str) -> None:
         print(f"  {config.retriever.spec:<14} {result.summary(DEFAULT_KS)}")
         if not args.no_write:
-            path = write_grid_result(args.out, config, result, corpus, DEFAULT_KS)
+            path = write_grid_result(args.out, config, result, corpus, DEFAULT_KS, experiment)
             log.debug(f"  wrote {_display(path)}")
 
     scored = run_grid(

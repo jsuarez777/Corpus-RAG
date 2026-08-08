@@ -184,7 +184,8 @@ def evaluate(
     for item in relevance:
         started = time.perf_counter()
         results = retriever.retrieve(item.query, top_k=depth)
-        latencies.append((time.perf_counter() - started) * 1000)
+        latency_ms = (time.perf_counter() - started) * 1000
+        latencies.append(latency_ms)
 
         retrieved = [result.chunk.id for result in results]
         scores = evaluate_query(retrieved, item.relevant, ks)
@@ -200,6 +201,19 @@ def evaluate(
                     "section_id": item.section_id,
                     "num_relevant": len(item.relevant),
                     "num_retrieved": len(retrieved),
+                    # Kept per query, not just averaged: the mean hides the
+                    # shape, and the shape is the interesting part. Dense
+                    # latency is tight around its median while hybrid carries a
+                    # tail from BM25 scoring the whole corpus, and two configs
+                    # can share a mean while one of them is occasionally slow.
+                    "latency_ms": round(latency_ms, 3),
+                    # The ranked ids, so a reranker can be scored against this
+                    # run without repeating the retrieval it would rerank. Ids
+                    # rather than chunk text: the text is already in
+                    # data/chunks/, and inlining it here would multiply the
+                    # result file by top_k for nothing.
+                    "retrieved": [str(chunk_id) for chunk_id in retrieved],
+                    "relevant": [str(chunk_id) for chunk_id in item.relevant],
                     **scores,
                 }
             )
