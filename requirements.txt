@@ -31,7 +31,11 @@ snowballstemmer==3.1.1 # Porter stemmer for the BM25 tokenizer. Replaces nltk,
                        #   it, so `import nltk` fails outright in this layout.
 
 # --- Reranking ---
-cohere>=5.13           # NOT YET USED: optional, --rerank cohere
+cohere>=5.13           # optional: the hosted reranker. The local cross-encoder
+                       #   is the default, so a clone with no Cohere account
+                       #   still reproduces every number. Unpinned because
+                       #   nothing here touches the SDK's shape beyond
+                       #   ClientV2.rerank.
 
 # --- Generation & judging ---
 openai==2.52.0         # responses API, behind app/rag/generation/llm.py. Pinned

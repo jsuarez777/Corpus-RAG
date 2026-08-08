@@ -38,6 +38,7 @@ from app.rag.generation import (  # noqa: E402
     unresolved_markers,
 )
 from app.rag.models import QAResponse  # noqa: E402
+from app.rag.reranking import reranker_from_spec  # noqa: E402
 from app.rag.retrieval import FUSIONS, HybridRetriever  # noqa: E402
 from app.rag.stores import index_dir  # noqa: E402
 from app.rag.utils.logging_utils import setup_logging  # noqa: E402
@@ -130,6 +131,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_MODEL,
         help="model that grades, with --judge; a different one avoids self-grading",
     )
+    parser.add_argument(
+        "--rerank",
+        metavar="SPEC",
+        help="second-stage reranker: cross_encoder[:model] or cohere[:model]",
+    )
+    parser.add_argument(
+        "--rerank-depth",
+        type=int,
+        metavar="N",
+        help="candidates to rerank down to --top-k; default: 4x top-k",
+    )
     parser.add_argument("--show-context", action="store_true", help="print the numbered passages")
     parser.add_argument("-i", "--chunks", type=Path, default=DEFAULT_CHUNKS)
     parser.add_argument("-x", "--indices", type=Path, default=DEFAULT_INDICES)
@@ -164,10 +176,24 @@ def main(argv: list[str] | None = None) -> int:
 
     prompt = load_prompt(args.prompt_version)
     llm = OpenAILLM(model=args.model, temperature=args.temperature)
-    generator = AnswerGenerator(retrievers[args.retriever], llm, top_k=args.top_k, prompt=prompt)
+
+    # Built here rather than lazily so a bad spec fails before the first
+    # question is typed. Weights still load on first use, not on construction.
+    reranker = reranker_from_spec(args.rerank) if args.rerank else None
+
+    generator = AnswerGenerator(
+        retrievers[args.retriever],
+        llm,
+        top_k=args.top_k,
+        prompt=prompt,
+        reranker=reranker,
+        rerank_depth=args.rerank_depth,
+    )
     log.info(
         f"{spec} | {args.embedder} | {args.retriever} | {args.model} | prompt {prompt.version}"
     )
+    if reranker is not None:
+        log.info(f"Reranking {generator.rerank_depth or args.top_k * 4} candidates to {args.top_k}")
 
     # The judge gets its own client so its tokens are costed apart from the
     # answers', and so it can run on a different model.

@@ -37,6 +37,13 @@ log = logging.getLogger(__name__)
 
 DEFAULT_TOP_K = 5
 
+#: How many candidates to fetch for a reranker to choose from, when the caller
+#: does not say. Four times the passages actually kept: a reranker earns its
+#: cost by narrowing, and fetching exactly what you keep leaves it nothing to
+#: narrow. Measured on 488 queries, reranking 10 candidates down to 1 moved
+#: hit@1 by +0.033 while reranking 10 down to 10 moved it by exactly zero.
+DEFAULT_RERANK_DEPTH_FACTOR = 4
+
 #: Answer returned without calling the model when retrieval comes back empty.
 NO_CONTEXT_ANSWER = "No relevant passages were retrieved for this question."
 
@@ -56,6 +63,7 @@ class AnswerGenerator:
         top_k: int = DEFAULT_TOP_K,
         prompt: AnswerPrompt | None = None,
         reranker: BaseReranker | None = None,
+        rerank_depth: int | None = None,
         passage_chars: int = DEFAULT_PASSAGE_CHARS,
         snippet_chars: int = DEFAULT_SNIPPET_CHARS,
         temperature: float | None = None,
@@ -65,14 +73,26 @@ class AnswerGenerator:
         self.top_k = top_k
         self.prompt = prompt or load_prompt()
         self.reranker = reranker
+        self.rerank_depth = rerank_depth
         self.passage_chars = passage_chars
         self.snippet_chars = snippet_chars
         self.temperature = temperature
 
     def retrieve(self, query: str, top_k: int | None = None) -> list[RetrievalResult]:
-        """Retrieve, and rerank when a reranker is configured."""
+        """Retrieve, and rerank when a reranker is configured.
+
+        With a reranker the retriever is asked for more than will be kept, so
+        the reranker has candidates to choose between. Fetching exactly ``k``
+        and reranking to ``k`` returns the same passages in a different order —
+        the model reads all of them either way, so the reordering is nearly all
+        the effect there is.
+        """
         k = self.top_k if top_k is None else top_k
-        results = self.retriever.retrieve(query, top_k=k)
+        depth = k
+        if self.reranker is not None:
+            depth = max(k, self.rerank_depth or k * DEFAULT_RERANK_DEPTH_FACTOR)
+
+        results = self.retriever.retrieve(query, top_k=depth)
         if self.reranker is not None and results:
             results = self.reranker.rerank(query, results, top_k=k)
         return results

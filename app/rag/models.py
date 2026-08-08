@@ -109,6 +109,18 @@ class RetrievalResult(BaseModel):
     chunk: Chunk
     score: float
     retriever_type: RetrieverType
+    original_rank: int | None = Field(
+        default=None,
+        ge=1,
+        description="1-based position before reranking; None if never reranked",
+    )
+    """Where this result sat in the first-stage ranking.
+
+    Set by rerankers, which overwrite ``score`` with their own incomparable
+    scale — without this the move is unrecoverable, and "the reranker put the
+    gold chunk first" cannot be told apart from "it was already first". That
+    distinction is the entire question a reranker has to answer.
+    """
 
 
 class Citation(BaseModel):
