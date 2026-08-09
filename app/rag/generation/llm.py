@@ -5,10 +5,19 @@ answer assembly in :mod:`app.rag.generation.generator`. What this class owns is
 the two things that only make sense next to the API call — retries, and the
 per-call cost accounting ``openai_client.pricing`` makes available.
 
-``openai_client`` constructs its SDK client with ``max_retries=0`` and says
-retries belong at the application level; this is that level. Backoff is
-exponential over connection errors, rate limits and 5xx only — a 400 is a bad
-request that will be just as bad the second time.
+**Retries are the SDK's, deliberately.** ``openai_client`` defaults to
+``max_retries=0`` and leaves retrying to the application; this class opts back
+in, because the decision needs information that does not reach this layer. A 429
+carries ``retry-after-ms`` telling the caller how long to wait, and the SDK is
+the only code holding the response headers — everything above it sees a
+``RateLimitError`` with no timing in it. Given the header it waits exactly that
+long, refuses to retry at all past two minutes, and jitters its own fallback
+backoff so concurrent callers do not retry in lockstep.
+
+That last point is why this changed. Batch answering and judging run several
+calls at once, and a hand-rolled fixed backoff had every worker hit the limit
+together, sleep the same two seconds, and retry together. Retrying blind is
+worse than not retrying in a pool.
 
 The ``openai`` package is imported lazily, inside the methods that need it, so
 that importing this module (and the tests for context building and citation
@@ -18,7 +27,6 @@ parsing) does not require the SDK or an API key to be present.
 from __future__ import annotations
 
 import logging
-import time
 from typing import Any
 
 from app.rag.base import BaseLLM
@@ -31,8 +39,10 @@ DEFAULT_MODEL = "gpt-4.1-mini"
 #: and a config that cannot be re-run to the same numbers cannot be compared.
 DEFAULT_TEMPERATURE = 0.0
 
-DEFAULT_MAX_RETRIES = 3
-RETRY_BACKOFF_SECONDS = 2.0
+#: Transport retries, performed by the SDK. Five attempts is enough to ride out
+#: the rate limiting a pool of workers causes itself; each wait is whatever the
+#: server asked for, or a jittered ``0.5 * 2**n`` when it asked for nothing.
+DEFAULT_MAX_RETRIES = 4
 
 
 def _transient_errors() -> tuple[type[Exception], ...]:
@@ -66,7 +76,7 @@ class OpenAILLM(BaseLLM):
         self.max_retries = max_retries
         # Temperature is passed per call rather than held on the client, so a
         # judge at 0.0 and an answer at 0.3 can share one instance.
-        self._client = MyOpenAIClient(model=model, api_key=api_key)
+        self._client = MyOpenAIClient(model=model, api_key=api_key, max_retries=max_retries)
         self.calls = 0
         self.input_tokens = 0
         self.output_tokens = 0
@@ -100,26 +110,22 @@ class OpenAILLM(BaseLLM):
         return (response.output_text or "").strip()
 
     def _call(self, messages: list[dict[str, str]], temperature: float, kwargs: dict[str, Any]):
-        """One API call, retried with exponential backoff on transient failures."""
-        last_error: Exception | None = None
-        for attempt in range(1, self.max_retries + 1):
-            try:
-                return self._client.query(
-                    input=messages, model=self.model, temperature=temperature, **kwargs
-                )
-            except _transient_errors() as error:
-                last_error = error
-                if attempt == self.max_retries:
-                    break
-                delay = RETRY_BACKOFF_SECONDS * 2 ** (attempt - 1)
-                log.warning(
-                    f"{type(error).__name__} on attempt {attempt}/{self.max_retries}; "
-                    f"retrying in {delay:.0f}s"
-                )
-                time.sleep(delay)
-        raise RuntimeError(
-            f"{self.model} failed after {self.max_retries} attempts: {last_error}"
-        ) from last_error
+        """One API call. Retries happen inside the SDK; this names the failure.
+
+        No loop of its own: the SDK has already retried
+        :attr:`max_retries` times by the time an exception reaches here, so a
+        second loop around it would multiply the attempts and compound the
+        sleeps. What is left worth doing is saying which model failed, since the
+        SDK's message does not, and a grid run has several in flight.
+        """
+        try:
+            return self._client.query(
+                input=messages, model=self.model, temperature=temperature, **kwargs
+            )
+        except _transient_errors() as error:
+            raise RuntimeError(
+                f"{self.model} failed after {self.max_retries} SDK retries: {error}"
+            ) from error
 
     def _record_usage(self, response: Any) -> None:
         """Accumulate tokens from one response. Absent usage is not an error —

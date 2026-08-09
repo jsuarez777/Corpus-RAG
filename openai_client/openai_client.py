@@ -48,7 +48,11 @@ class MyOpenAIClient:
     """
 
     def __init__(
-        self, model: str, api_key: Optional[str] = None, temperature: Optional[float] = None
+        self,
+        model: str,
+        api_key: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_retries: int = 0,
     ):
         if not model:
             print("Error: 'model' is required to initialize MyOpenAIClient.", file=sys.stderr)
@@ -61,6 +65,7 @@ class MyOpenAIClient:
                 # Expose it so the OpenAI SDK and any child code can see it too.
                 os.environ.setdefault("OPENAI_API_KEY", self.api_key)
         self._client: Optional[OpenAI] = None
+        self.max_retries: int = max_retries
         self.model: str = model
         self._temperature: Optional[float] = temperature
         self.pricing: Optional[dict] = PRICES.get(model)
@@ -86,8 +91,12 @@ class MyOpenAIClient:
             kwargs = {}
             if self.api_key:
                 kwargs["api_key"] = self.api_key
-            # Disable OpenAI SDK's built-in retries - we handle retries at application level
-            kwargs["max_retries"] = 0
+            # Defaults to 0 - the SDK's built-in retries are off unless a caller
+            # asks for them, so application-level retry logic stays in charge.
+            # Callers that would rather the SDK handle transport failures pass
+            # max_retries: it reads the server's retry-after headers, which are
+            # not visible above this layer.
+            kwargs["max_retries"] = self.max_retries
             self._client = OpenAI(**kwargs)
         return self._client
 

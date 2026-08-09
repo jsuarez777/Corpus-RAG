@@ -254,9 +254,27 @@ behind refusing a ranking shallower than the depth asked for: a reranker wanting
 20 candidates and silently getting 5 is a different experiment, not a degraded
 one.
 
+**Going parallel made the retry logic a defect, so it moved to the SDK.**
+`OpenAILLM` had its own loop: three attempts, sleeping a fixed 2s then 4s. Eight
+workers hit a rate limit within milliseconds of each other, sleep the identical
+two seconds, and retry in the same instant — a hand-rolled backoff with no
+jitter is worse in a pool than out of one. The fix was not to write better
+backoff but to stop writing it here at all. A 429 carries `retry-after-ms`
+saying how long to wait, and by the time an exception reaches this module the
+response headers are gone; the SDK is the only layer holding them. It waits
+exactly what the server asked, declines to retry past two minutes rather than
+sleeping that long inside a worker, and jitters its own fallback. So
+`openai_client` gained a `max_retries` argument (still defaulting to 0, so
+nothing else shifts), `OpenAILLM` passes 4, and `_call` lost its loop —
+retaining only the wrapper that names which model failed, since the SDK's
+message does not and a grid run has several in flight. Retries went from three
+attempts over a blind six seconds to five at whatever the server actually asks
+for.
+
 **Not addressed:** `app/evaluate.py`'s flag path still writes the second result
 schema the charts cannot read, and it does not save rankings at all — only the
-`-c` path does. The reranker is still absent from the grid runner, though the
+`-c` path does. `CohereReranker` keeps its own retry loop, which is correct —
+that is a different SDK, and this change says nothing about it. The reranker is still absent from the grid runner, though the
 rankings artifact is most of what wiring it in needs: a reranker reorders
 candidates that are now on disk, so scoring one no longer means re-running the
 retrieval it reranks.

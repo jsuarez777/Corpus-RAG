@@ -10,7 +10,7 @@ Usage:
     python app/serve.py                                   # interactive
     python app/serve.py "how are cells tracked?"
     python app/serve.py "..." -r bm25 -k 8
-    python app/serve.py "..." -m gpt-4.1 --show-context
+    python app/serve.py "..." -m gpt-5-mini --show-context
 
 Every `[N]` in the answer is listed under Sources with the passage it points
 at; a marker with no source line is a citation the model invented.

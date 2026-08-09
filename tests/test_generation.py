@@ -288,6 +288,87 @@ class TestOpenAILLM:
         llm._record_usage(object())
         assert llm.calls == 1 and llm.cost_usd == 0.0
 
+
+def _http_response(status: int):
+    """A minimal real response, since the SDK's errors read `response.request`."""
+    import httpx
+
+    request = httpx.Request("POST", "https://api.openai.com/v1/responses")
+    return httpx.Response(status, request=request)
+
+
+class TestRetries:
+    """Retrying is the SDK's job, and the reason is not obvious enough to leave
+    untested: a 429 says *how long to wait* in a response header, and by the
+    time an exception reaches this module the headers are gone. Batch stages run
+    several calls at once, so a hand-rolled fixed sleep had every worker back off
+    in lockstep and retry into the same limit."""
+
+    @pytest.fixture
+    def llm(self):
+        pytest.importorskip("openai")
+        from app.rag.generation import OpenAILLM
+
+        return OpenAILLM(model="gpt-4.1-mini", api_key="test-key-not-used")
+
+    def test_the_sdk_client_is_built_with_retries_enabled(self, llm) -> None:
+        """`openai_client` defaults to 0, which switches off the only layer that
+        can read `retry-after-ms`."""
+        assert llm._client.max_retries == llm.max_retries > 0
+        assert llm._client.get_client().max_retries == llm.max_retries
+
+    def test_the_client_still_defaults_to_no_retries_for_other_callers(self) -> None:
+        """Opting in is this class's decision, not a change to the shared client."""
+        pytest.importorskip("openai")
+        from openai_client.openai_client import MyOpenAIClient
+
+        assert MyOpenAIClient(model="gpt-4.1-mini", api_key="x").max_retries == 0
+
+    def test_a_transient_failure_is_not_retried_here(self, llm, monkeypatch) -> None:
+        """The SDK has already spent its attempts by the time this sees the
+        error; looping again would multiply attempts and compound the sleeps."""
+        import openai
+
+        calls = []
+
+        def fail(**kwargs):
+            calls.append(kwargs)
+            raise openai.RateLimitError("rate limited", response=_http_response(429), body=None)
+
+        monkeypatch.setattr(llm._client, "query", fail)
+
+        with pytest.raises(RuntimeError, match="gpt-4.1-mini failed"):
+            llm._call([{"role": "user", "content": "hi"}], 0.0, {})
+
+        assert len(calls) == 1
+
+    def test_the_failure_names_the_model(self, llm, monkeypatch) -> None:
+        """A grid run has several models in flight; the SDK's message has none."""
+        import openai
+
+        def fail(**kwargs):
+            raise openai.APIConnectionError(request=None)
+
+        monkeypatch.setattr(llm._client, "query", fail)
+
+        with pytest.raises(RuntimeError, match="gpt-4.1-mini"):
+            llm._call([{"role": "user", "content": "hi"}], 0.0, {})
+
+    def test_a_bad_request_is_not_treated_as_transient(self, llm, monkeypatch) -> None:
+        """A 400 will be just as bad the second time, and wrapping it would hide
+        the SDK's message about which field was wrong."""
+        import openai
+
+        def fail(**kwargs):
+            raise openai.BadRequestError(
+                "unknown parameter", response=_http_response(400), body=None
+            )
+
+        monkeypatch.setattr(llm._client, "query", fail)
+
+        with pytest.raises(openai.BadRequestError):
+            llm._call([{"role": "user", "content": "hi"}], 0.0, {})
+
     def test_unknown_model_has_no_cost(self, llm) -> None:
         llm.model = "gpt-imaginary"
         assert llm.cost_usd is None
