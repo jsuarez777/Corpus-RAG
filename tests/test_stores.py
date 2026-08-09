@@ -203,7 +203,40 @@ class TestPersistence:
             "metric": "cosine",
             "dimension": 3,
             "num_chunks": 3,
+            "chunk_set_id": "",
         }
+
+    def test_the_manifest_records_which_chunk_set_was_indexed(
+        self, store: FaissStore, tmp_path: Path
+    ) -> None:
+        """Chunk ids are minted per chunking run, so an index built before a
+        re-chunk holds ids the chunk file no longer contains. Hybrid retrieval
+        fuses dense results (index ids) with BM25 results (chunk-file ids), and
+        across two generations those sets are disjoint — wrong metrics, no
+        error. The stamp is what makes that one comparison instead."""
+        store.chunk_set_id = "abc-123"
+        store.save(tmp_path / "idx")
+
+        restored = FaissStore()
+        restored.load(tmp_path / "idx")
+
+        assert json.loads((tmp_path / "idx" / META_FILE).read_text())["chunk_set_id"] == "abc-123"
+        assert restored.chunk_set_id == "abc-123"
+
+    def test_an_index_written_before_stamping_loads_as_unknown(
+        self, store: FaissStore, tmp_path: Path
+    ) -> None:
+        """"" rather than a raise: an unstamped index cannot be shown to
+        mismatch, and refusing it would break every index built so far."""
+        store.save(tmp_path / "idx")
+        meta_path = tmp_path / "idx" / META_FILE
+        meta = json.loads(meta_path.read_text())
+        del meta["chunk_set_id"]
+        meta_path.write_text(json.dumps(meta))
+
+        restored = FaissStore()
+        restored.load(tmp_path / "idx")
+        assert restored.chunk_set_id == ""
 
     def test_saving_an_empty_store_is_refused(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="empty"):

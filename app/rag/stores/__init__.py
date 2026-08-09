@@ -2,7 +2,12 @@
 
 from app.rag.base import BaseVectorStore
 from app.rag.stores.faiss_store import FaissStore, unit_rows
-from app.rag.stores.store import config_id, index_dir
+from app.rag.stores.store import (
+    config_id,
+    index_chunk_set_id,
+    index_dir,
+    require_same_chunk_set,
+)
 
 STORES: dict[str, type[BaseVectorStore]] = {
     FaissStore.name: FaissStore,
@@ -35,7 +40,9 @@ __all__ = [
     "FaissStore",
     "config_id",
     "get_store",
+    "index_chunk_set_id",
     "index_dir",
     "open_store",
+    "require_same_chunk_set",
     "unit_rows",
 ]

@@ -52,7 +52,7 @@ from app.rag.generation import (  # noqa: E402
 from app.rag.models import QAResponse, RetrievalResult  # noqa: E402
 from app.rag.reranking import reranker_from_spec  # noqa: E402
 from app.rag.retrieval import BM25Retriever, ReplayRetriever  # noqa: E402
-from app.rag.stores import index_dir, open_store  # noqa: E402
+from app.rag.stores import index_dir, open_store, require_same_chunk_set  # noqa: E402
 from app.rag.utils.logging_utils import setup_logging  # noqa: E402
 from app.rag.utils.parallel import DEFAULT_WORKERS, run_in_parallel  # noqa: E402
 
@@ -126,7 +126,9 @@ def build_live_retriever(config: PipelineConfig, *, chunks_dir: Path, indices_di
             f"run `python app/index.py {chunker_spec} -e {embedder_name}`."
         )
 
-    chunks = load_chunks(chunk_file(chunks_dir, chunker_spec, embedder_name))
+    path = chunk_file(chunks_dir, chunker_spec, embedder_name)
+    require_same_chunk_set(path, target)
+    chunks = load_chunks(path)
     embedder = get_embedder(embedder_name)
     embedder.embed_query("warm up")  # weights load here, not inside the first query
 

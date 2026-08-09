@@ -62,10 +62,15 @@ class FaissStore(BaseVectorStore):
 
     name = "faiss"
 
-    def __init__(self, dimension: int | None = None) -> None:
+    def __init__(self, dimension: int | None = None, chunk_set_id: str = "") -> None:
         self._dimension = dimension
         self._index = faiss.IndexFlatIP(dimension) if dimension else None
         self._chunks: list[Chunk] = []
+        #: Which chunking run these vectors came from. Saved to the manifest and
+        #: restored on load, so a caller holding a chunk file can tell whether
+        #: the two describe the same ids. Empty for an index built before the
+        #: stamp existed.
+        self.chunk_set_id = chunk_set_id
 
     @property
     def dimension(self) -> int | None:
@@ -158,6 +163,7 @@ class FaissStore(BaseVectorStore):
                     "metric": "cosine",
                     "dimension": self._dimension,
                     "num_chunks": len(self._chunks),
+                    "chunk_set_id": self.chunk_set_id,
                 },
                 indent=2,
             )
@@ -178,6 +184,11 @@ class FaissStore(BaseVectorStore):
                 f"Corrupt index at {path}: {index.ntotal} vectors against {len(chunks)} chunks."
             )
         self._index, self._chunks, self._dimension = index, chunks, index.d
+        try:
+            manifest = json.loads((path / META_FILE).read_text())
+        except (OSError, json.JSONDecodeError):
+            manifest = {}
+        self.chunk_set_id = str(manifest.get("chunk_set_id", ""))
 
     def __repr__(self) -> str:
         return f"{type(self).__name__}(dim={self._dimension}, chunks={len(self._chunks)})"

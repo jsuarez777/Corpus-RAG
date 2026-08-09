@@ -28,9 +28,10 @@ if __package__ in (None, ""):  # `python app/index.py` runs this as a script
 
 from app.rag.base import BaseEmbedder  # noqa: E402
 from app.rag.chunking import chunk_file, load_chunks  # noqa: E402
+from app.rag.chunking.store import chunk_set_id  # noqa: E402
 from app.rag.embedding import DEFAULT_EMBEDDER, EMBEDDERS, get_embedder  # noqa: E402
 from app.rag.models import Chunk  # noqa: E402
-from app.rag.stores import get_store, index_dir  # noqa: E402
+from app.rag.stores import get_store, index_chunk_set_id, index_dir  # noqa: E402
 from app.rag.utils.logging_utils import setup_logging  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -183,10 +184,25 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
+    stamp = chunk_set_id(path)
     target = index_dir(args.out, spec, embedder_name)
     if target.exists() and not args.force:
-        log.info(f"{_display(target)} already exists — pass --force to rebuild.")
-        return 0
+        # Skipping is only safe if the existing index was built from these
+        # chunks. Re-running app/chunk.py mints a new id for every chunk, so an
+        # older index keeps returning ids the chunk file no longer contains —
+        # which BM25, built from the file, would then fuse with. A mismatch
+        # rebuilds rather than erroring: --force is for re-indexing when
+        # nothing changed, and here something did.
+        existing = index_chunk_set_id(target)
+        if existing == stamp and stamp:
+            log.info(f"{_display(target)} already exists — pass --force to rebuild.")
+            return 0
+        reason = (
+            f"holds chunk set {existing[:8]}, but {_display(path)} is now {stamp[:8]}"
+            if existing and stamp
+            else "carries no chunk_set_id"
+        )
+        log.info(f"{_display(target)} {reason} — re-indexing.")
 
     chunks = load_chunks(path)
     if args.limit:
@@ -205,6 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     log.info(f"Embedded {len(chunks)} chunks in {elapsed:.1f}s ({len(chunks) / elapsed:.0f}/s)")
 
     store = get_store()
+    store.chunk_set_id = stamp
     store.add(chunks)
     store.save(target)
     log.info(f"\n{store!r} -> {_display(target)}")
