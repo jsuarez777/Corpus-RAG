@@ -14,6 +14,7 @@ part that costs money to get wrong —
 
 from __future__ import annotations
 
+import argparse
 import json
 from pathlib import Path
 from uuid import uuid4
@@ -22,17 +23,21 @@ import pytest
 
 from app.generate_answers import (
     as_record,
+    build_replay_retriever,
     generate,
     header,
     label_for,
     select_config,
+    why_serial,
 )
 from app.judge_answers import judge_file, read_answers, report_from, write_report
 from app.rag.base import BaseLLM, BaseRetriever
 from app.rag.config import PipelineConfig
 from app.rag.evaluation.judge import DIMENSIONS
+from app.rag.evaluation.metrics import Ranking
 from app.rag.evaluation.plots import GENERATION_AXES
 from app.rag.evaluation.qrels import QueryRelevance
+from app.rag.evaluation.rankings import write_rankings
 from app.rag.generation import AnswerGenerator
 from app.rag.models import Chunk, ChunkMetadata, RetrievalResult
 from app.visualize import load_judged
@@ -66,13 +71,18 @@ def make_item(number: int) -> QueryRelevance:
 
 
 class StubRetriever(BaseRetriever):
-    """Returns one passage, always."""
+    """Returns one passage, always — unless the query is in ``fail_on``."""
+
+    def __init__(self) -> None:
+        self.fail_on: set[str] = set()
 
     @property
     def retriever_type(self):
         return "dense"
 
     def retrieve(self, query: str, top_k: int = 5) -> list[RetrievalResult]:
+        if query in self.fail_on:
+            raise RuntimeError(f"retrieval failed on {query!r}")
         return [RetrievalResult(chunk=make_chunk(), score=0.9, retriever_type="dense")]
 
 
@@ -211,6 +221,100 @@ class TestGenerate:
         response = make_generator("An answer [1].").answer_from("q?", StubRetriever().retrieve("q"))
         record = as_record(make_item(1), response, 123.456)
         assert record["latency_ms"] == 123.5
+
+
+class TestReplayPath:
+    """Answering from rankings `app/retrieve.py` already saved.
+
+    The guards matter more than the happy path: both refuse rather than
+    proceed, because the failure they prevent is answering hundreds of queries
+    from the wrong passages and paying for every one.
+    """
+
+    def _saved(self, tmp_path: Path, config_id: str, top_k: int) -> Path:
+        return write_rankings(
+            tmp_path, [Ranking("q1", retrieved=[uuid4()])], config_id=config_id, top_k=top_k
+        )
+
+    def test_rankings_for_another_config_are_refused(self, tmp_path: Path) -> None:
+        path = self._saved(tmp_path, "some_other_cell", top_k=10)
+
+        with pytest.raises(SystemExit, match="some_other_cell"):
+            build_replay_retriever(GRID[0], [], rankings_path=path, chunks_dir=tmp_path, depth=5)
+
+    def test_a_ranking_shallower_than_the_answer_needs_is_refused(self, tmp_path: Path) -> None:
+        """Answering from 5 passages where 20 were asked for — what a reranker
+        wants — is a different experiment, not a slightly worse one."""
+        path = self._saved(tmp_path, GRID[0].id, top_k=5)
+
+        with pytest.raises(SystemExit, match="top_k=5"):
+            build_replay_retriever(GRID[0], [], rankings_path=path, chunks_dir=tmp_path, depth=20)
+
+
+class TestWhySerial:
+    """`--workers` has to behave like a request, not a suggestion.
+
+    Every one of these paths runs at eight calls a minute or one; the gap on a
+    488-query config is four minutes against twenty-five, and it is only
+    visible on the wall clock after the run has already been paid for.
+    """
+
+    def args(self, **overrides) -> argparse.Namespace:
+        base = {"rerank": None, "live": False, "workers": None}
+        return argparse.Namespace(**{**base, **overrides})
+
+    def test_replaying_saved_rankings_can_be_parallel(self, tmp_path: Path) -> None:
+        saved = write_rankings(tmp_path, [Ranking("q1")], config_id="cell")
+        assert why_serial(self.args(), saved) == ""
+
+    def test_reranking_is_named_as_the_reason(self, tmp_path: Path) -> None:
+        saved = write_rankings(tmp_path, [Ranking("q1")], config_id="cell")
+        assert "cross-encoder" in why_serial(self.args(rerank="cross_encoder"), saved)
+
+    def test_live_retrieval_is_named_as_the_reason(self, tmp_path: Path) -> None:
+        saved = write_rankings(tmp_path, [Ranking("q1")], config_id="cell")
+        assert "faiss" in why_serial(self.args(live=True), saved)
+
+    def test_a_missing_rankings_file_names_the_command_that_fixes_it(self, tmp_path: Path) -> None:
+        """The one reason that is nobody's explicit choice, so it has to say
+        what to run rather than only what went wrong."""
+        reason = why_serial(self.args(), tmp_path / "never_retrieved.json")
+        assert "retrieve.py" in reason
+
+    def test_reranking_is_reported_ahead_of_live(self, tmp_path: Path) -> None:
+        """Both are true when both flags are passed; the reader needs one
+        actionable sentence, and dropping the reranker is the smaller change."""
+        assert "cross-encoder" in why_serial(
+            self.args(rerank="cross_encoder", live=True), tmp_path / "absent.json"
+        )
+
+
+class TestParallelGeneration:
+    def test_threaded_generation_writes_every_answer_once(self, tmp_path: Path) -> None:
+        """Workers write through one callback on the calling thread, so lines
+        cannot interleave and `--resume` still finds exactly what was paid for."""
+        out = tmp_path / "answers.jsonl"
+        items = [make_item(n) for n in range(12)]
+
+        written = generate(make_generator("an answer"), items, out, config=GRID[0], workers=4)
+
+        lines = out.read_text().splitlines()
+        assert written == 12
+        assert len(lines) == 13  # header + 12
+        ids = {json.loads(line)["query_id"] for line in lines[1:]}
+        assert ids == {item.query_id for item in items}
+
+    def test_a_failure_under_threads_still_drops_only_that_query(self, tmp_path: Path) -> None:
+        out = tmp_path / "answers.jsonl"
+        generator = make_generator("fine")
+        generator.retriever.fail_on = {"question 2?"}
+
+        written = generate(
+            generator, [make_item(n) for n in range(5)], out, config=GRID[0], workers=4
+        )
+
+        assert written == 4
+        assert len(out.read_text().splitlines()) == 5
 
 
 class TestReport:

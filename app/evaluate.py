@@ -7,6 +7,7 @@ without the config that produced it cannot be compared to anything.
 
 Usage:
     python app/evaluate.py -c config/experiments/grid_12.yaml   # the experiment grid
+    python app/evaluate.py -c ... --from-rankings          # rescore what retrieve.py saved
     python app/evaluate.py                                # default config, all retrievers
     python app/evaluate.py -s sentence:5:1 -r hybrid
     python app/evaluate.py --alpha-sweep 0.3 0.5 0.7
@@ -17,6 +18,11 @@ grid it declares is the artifact, versioned next to the results it produced, and
 its cells are grouped so each index is opened once no matter how many retrievers
 score against it. The flags are for the question you have at a terminal, where
 writing a file first would be friction.
+
+Retrieval and scoring are separable, and ``--from-rankings`` is the reason:
+adding a metric or another k does not change what a search returned, so it
+rescores the ids `app/retrieve.py` saved instead of opening twelve indices to
+recompute them. The full ``-c`` run saves those ids on its way past.
 
 Results land in experiments/results/<timestamp>_<config>.json.
 """
@@ -29,6 +35,7 @@ import json
 import logging
 import sys
 import time
+from collections.abc import Iterator
 from pathlib import Path
 
 if __package__ in (None, ""):  # `python app/evaluate.py` runs this as a script
@@ -38,8 +45,17 @@ from app.rag.base import BaseEmbedder, BaseRetriever  # noqa: E402
 from app.rag.chunking import chunk_file, load_chunks  # noqa: E402
 from app.rag.config import PipelineConfig, build_retriever, load_grid, read_yaml  # noqa: E402
 from app.rag.embedding import DEFAULT_EMBEDDER, EMBEDDERS, get_embedder  # noqa: E402
-from app.rag.evaluation import DEFAULT_KS, EvaluationResult, build_relevance, evaluate  # noqa: E402
-from app.rag.evaluation.qrels import load_benchmark  # noqa: E402
+from app.rag.evaluation import (  # noqa: E402
+    DEFAULT_KS,
+    EvaluationResult,
+    Ranking,
+    build_relevance,
+    evaluate,
+    retrieve_all,
+    score_rankings,
+)
+from app.rag.evaluation.qrels import QueryRelevance, load_benchmark  # noqa: E402
+from app.rag.evaluation.rankings import load_rankings, rankings_file, write_rankings  # noqa: E402
 from app.rag.retrieval import BM25Retriever, DenseRetriever, HybridRetriever  # noqa: E402
 from app.rag.stores import config_id, index_dir, open_store  # noqa: E402
 from app.rag.utils.logging_utils import setup_logging  # noqa: E402
@@ -52,6 +68,7 @@ DEFAULT_CHUNKS = DATA_DIR / "chunks"
 DEFAULT_INDICES = DATA_DIR / "indices"
 DEFAULT_BENCHMARK = DATA_DIR / "open_ragbench/pdf/arxiv"
 DEFAULT_RESULTS = PROJECT_ROOT / "experiments/results"
+DEFAULT_RANKINGS = PROJECT_ROOT / "experiments/rankings"
 
 
 def _display(path: Path) -> str:
@@ -111,7 +128,7 @@ def group_by_index(configs: list[PipelineConfig]) -> dict[str, list[PipelineConf
     return grouped
 
 
-def run_grid(
+def retrieve_grid(
     configs: list[PipelineConfig],
     queries,
     qrels,
@@ -120,20 +137,23 @@ def run_grid(
     chunks_dir: Path,
     indices_dir: Path,
     limit: int | None = None,
-    on_result=None,
-) -> list[tuple[PipelineConfig, EvaluationResult]]:
-    """Score every cell, loading each index and chunk set exactly once.
+) -> Iterator[tuple[PipelineConfig, list[QueryRelevance], list[Ranking], str]]:
+    """Retrieve every cell, loading each index and chunk set exactly once.
+
+    The expensive half of the grid, and the only half that opens an index or
+    loads an embedder. It yields ranked ids per cell as they finish; what reads
+    them — scoring here, answering in ``app/generate_answers.py`` — is the
+    caller's business, and no consumer has to repeat the search to get them.
 
     Embedders are cached across groups too: ``get_embedder`` builds a fresh
-    object each call and the weights load on first use, so scoring mpnet's
+    object each call and the weights load on first use, so retrieving mpnet's
     three chunkers without a cache would download and load mpnet three times.
 
-    ``on_result`` is called per cell as it finishes rather than at the end —
-    a twelve-cell run is long enough that nobody should have to wait for the
-    last one to see the first.
+    Yielded per cell rather than returned at the end — a twelve-cell run is
+    long enough that nobody should have to wait for the last one to see the
+    first.
     """
     embedders: dict[str, BaseEmbedder] = {}
-    scored: list[tuple[PipelineConfig, EvaluationResult]] = []
 
     groups = group_by_index(configs)
     for position, (index_id, cells) in enumerate(groups.items(), start=1):
@@ -177,15 +197,97 @@ def run_grid(
             retriever = build_retriever(
                 config, store=store, chunks=chunks, embedder=embedder, sparse=sparse
             )
-            result = evaluate(retriever, relevance, ks=DEFAULT_KS, top_k=config.top_k)
-            scored.append((config, result))
-            if on_result:
-                on_result(config, result, report.summary())
+            rankings = retrieve_all(retriever, relevance, ks=DEFAULT_KS, top_k=config.top_k)
+            yield config, relevance, rankings, report.summary()
 
         # Explicit: a 46M index plus its chunks stays reachable through the
         # loop variables otherwise, and six of those at once is real memory.
         del store, chunks, relevance, sparse
         gc.collect()
+
+
+def run_grid(
+    configs: list[PipelineConfig],
+    queries,
+    qrels,
+    answers,
+    *,
+    chunks_dir: Path,
+    indices_dir: Path,
+    limit: int | None = None,
+    on_result=None,
+    on_rankings=None,
+) -> list[tuple[PipelineConfig, EvaluationResult]]:
+    """Retrieve and score every cell.
+
+    ``on_rankings`` is handed the ranked ids before they are scored, which is
+    how ``app/retrieve.py`` saves them; ``on_result`` is handed the metrics as
+    each cell finishes.
+    """
+    scored: list[tuple[PipelineConfig, EvaluationResult]] = []
+
+    for config, relevance, rankings, summary in retrieve_grid(
+        configs,
+        queries,
+        qrels,
+        answers,
+        chunks_dir=chunks_dir,
+        indices_dir=indices_dir,
+        limit=limit,
+    ):
+        if on_rankings:
+            on_rankings(config, rankings)
+        result = score_rankings(rankings, relevance, ks=DEFAULT_KS)
+        scored.append((config, result))
+        if on_result:
+            on_result(config, result, summary)
+
+    return scored
+
+
+def score_saved(
+    configs: list[PipelineConfig],
+    queries,
+    qrels,
+    answers,
+    *,
+    chunks_dir: Path,
+    rankings_dir: Path,
+    limit: int | None = None,
+    on_result=None,
+) -> list[tuple[PipelineConfig, EvaluationResult]]:
+    """Score rankings already on disk, without retrieving anything.
+
+    The counterpart to ``app/retrieve.py``: a metric definition can change, or
+    a new k be added, without re-running a search whose answer has not. Chunk
+    sets are still loaded — the qrels are built from them — but no index is
+    opened and no embedder is built.
+
+    A config with no rankings file is skipped with a warning rather than
+    retrieved on the spot: falling back would make ``--from-rankings`` mean
+    something different depending on what happens to be on disk.
+    """
+    scored: list[tuple[PipelineConfig, EvaluationResult]] = []
+    chunk_sets: dict[str, list] = {}
+
+    for config in configs:
+        path = rankings_file(rankings_dir, config.id)
+        if not path.is_file():
+            log.warning(f"No rankings for {config.id} — run `python app/retrieve.py`. Skipping.")
+            continue
+
+        if config.index_id not in chunk_sets:
+            chunk_sets[config.index_id] = load_chunks(
+                chunk_file(chunks_dir, config.chunker.spec, config.embedder.spec)
+            )
+        relevance, report = build_relevance(chunk_sets[config.index_id], queries, qrels, answers)
+        if limit:
+            relevance = relevance[:limit]
+
+        result = score_rankings(load_rankings(path).rankings, relevance, ks=DEFAULT_KS)
+        scored.append((config, result))
+        if on_result:
+            on_result(config, result, report.summary())
 
     return scored
 
@@ -326,6 +428,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("-x", "--indices", type=Path, default=DEFAULT_INDICES)
     parser.add_argument("-b", "--benchmark", type=Path, default=DEFAULT_BENCHMARK)
     parser.add_argument("-o", "--out", type=Path, default=DEFAULT_RESULTS)
+    parser.add_argument(
+        "--rankings",
+        type=Path,
+        default=DEFAULT_RANKINGS,
+        metavar="DIR",
+        help="where the ranked ids are saved, for the answer stage to reuse",
+    )
+    parser.add_argument(
+        "--no-rankings", action="store_true", help="score only; do not save the ranked ids"
+    )
+    parser.add_argument(
+        "--from-rankings",
+        action="store_true",
+        help="score saved rankings instead of retrieving; no index or embedder is opened",
+    )
     parser.add_argument("--no-write", action="store_true", help="print only")
     return parser.parse_args(argv)
 
@@ -350,16 +467,43 @@ def run_from_config(args: argparse.Namespace) -> int:
             path = write_grid_result(args.out, config, result, corpus, DEFAULT_KS, experiment)
             log.debug(f"  wrote {_display(path)}")
 
-    scored = run_grid(
-        configs,
-        queries,
-        qrels,
-        answers,
-        chunks_dir=args.chunks,
-        indices_dir=args.indices,
-        limit=args.limit,
-        on_result=report_cell,
-    )
+    def save_rankings(config: PipelineConfig, rankings: list[Ranking]) -> None:
+        path = write_rankings(
+            args.rankings,
+            rankings,
+            config_id=config.id,
+            label=config.label,
+            index_id=config.index_id,
+            experiment=experiment,
+            top_k=config.top_k,
+            config=config.model_dump(mode="json"),
+        )
+        log.debug(f"  wrote {_display(path)}")
+
+    if args.from_rankings:
+        scored = score_saved(
+            configs,
+            queries,
+            qrels,
+            answers,
+            chunks_dir=args.chunks,
+            rankings_dir=args.rankings,
+            limit=args.limit,
+            on_result=report_cell,
+        )
+    else:
+        save = None if args.no_write or args.no_rankings else save_rankings
+        scored = run_grid(
+            configs,
+            queries,
+            qrels,
+            answers,
+            chunks_dir=args.chunks,
+            indices_dir=args.indices,
+            limit=args.limit,
+            on_result=report_cell,
+            on_rankings=save,
+        )
     if not scored:
         log.error("No cell produced a score.")
         return 1

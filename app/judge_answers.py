@@ -38,6 +38,7 @@ from app.rag.evaluation.judge import (  # noqa: E402
 from app.rag.generation import DEFAULT_MODEL, OpenAILLM  # noqa: E402
 from app.rag.models import QAResponse  # noqa: E402
 from app.rag.utils.logging_utils import setup_logging  # noqa: E402
+from app.rag.utils.parallel import DEFAULT_WORKERS, run_in_parallel  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -136,8 +137,16 @@ def judge_file(
     limit: int | None = None,
     resume: bool = False,
     use_reference: bool = True,
+    workers: int = DEFAULT_WORKERS,
 ) -> Path:
-    """Score one answers file and write its report. Returns the report path."""
+    """Score one answers file and write its report. Returns the report path.
+
+    Scoring is pure network wait — the judge reads a record and calls the API,
+    and nothing here touches an index or a model of its own — so the calls run
+    concurrently. Rows still arrive one at a time on this thread and are
+    appended and flushed as they land, which is what keeps ``--resume`` exact
+    after a stop.
+    """
     head, records = read_answers(answers_path)
     if limit:
         records = records[:limit]
@@ -149,21 +158,32 @@ def judge_file(
         log.info(f"Resuming: {len(existing)} already scored")
 
     judge = LLMJudge(OpenAILLM(model=model))
-    log.info(f"Judging {head['config_id']} with {model} | prompt {judge.prompt.version}")
+    log.info(
+        f"Judging {head['config_id']} with {model} | prompt {judge.prompt.version} "
+        f"| {workers} worker(s)"
+    )
 
     rows = [existing[record["query_id"]] for record in records if record["query_id"] in existing]
     pending = [record for record in records if record["query_id"] not in existing]
 
     with scores_path.open("a" if existing else "w", encoding="utf-8") as handle:
-        for position, record in enumerate(pending, start=1):
-            row = _score_one(judge, record, use_reference=use_reference)
-            if row is None:
-                continue
+
+        def write(row: dict) -> None:
             handle.write(json.dumps(row) + "\n")
             handle.flush()
             rows.append(row)
-            if position % 25 == 0 or position == len(pending):
-                log.info(f"  {position}/{len(pending)} scored | {judge.llm.usage_summary()}")
+
+        def progress(done: int, total: int) -> None:
+            if done % 25 == 0 or done == total:
+                log.info(f"  {done}/{total} scored | {judge.llm.usage_summary()}")
+
+        run_in_parallel(
+            lambda record: _score_one(judge, record, use_reference=use_reference),
+            pending,
+            workers=workers,
+            on_result=write,
+            on_progress=progress,
+        )
 
     report = report_from(rows, model=model, prompt_version=judge.prompt.version)
     log.info(report.summary())
@@ -207,6 +227,13 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="grade against the passages alone, ignoring the benchmark's answer",
     )
+    parser.add_argument(
+        "-w",
+        "--workers",
+        type=int,
+        default=DEFAULT_WORKERS,
+        help=f"concurrent judge calls; 1 for the serial path (default: {DEFAULT_WORKERS})",
+    )
     parser.add_argument("-a", "--answers", type=Path, default=DEFAULT_ANSWERS)
     parser.add_argument("-o", "--judged", type=Path, default=DEFAULT_JUDGED)
     return parser.parse_args(argv)
@@ -234,6 +261,7 @@ def main(argv: list[str] | None = None) -> int:
             limit=args.limit,
             resume=args.resume,
             use_reference=not args.no_reference,
+            workers=args.workers,
         )
         log.info(f"Wrote {_display(target)}")
     return 0

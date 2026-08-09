@@ -21,12 +21,15 @@ from app.rag.evaluation.judge import (
 from app.rag.evaluation.metrics import (
     DEFAULT_KS,
     EvaluationResult,
+    Ranking,
     evaluate,
     evaluate_query,
     hit_rate_at_k,
     ndcg_at_k,
     precision_at_k,
     reciprocal_rank,
+    retrieve_all,
+    score_rankings,
     section_coverage_at_k,
 )
 from app.rag.evaluation.qrels import (
@@ -61,6 +64,7 @@ __all__ = [
     "JudgeScore",
     "LLMJudge",
     "QueryRelevance",
+    "Ranking",
     "RelevanceReport",
     "RunResult",
     "SectionSpan",
@@ -83,6 +87,8 @@ __all__ = [
     "precision_at_k",
     "section_coverage_at_k",
     "reciprocal_rank",
+    "retrieve_all",
+    "score_rankings",
     "strip_math",
     "sweep_experiments",
     "varying_axes",

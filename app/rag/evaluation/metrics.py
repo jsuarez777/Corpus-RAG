@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import statistics
+import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field
 from math import log2
@@ -158,37 +159,107 @@ class EvaluationResult:
         )
 
 
-def evaluate(
+@dataclass
+class Ranking:
+    """What one query retrieved, and what it cost to retrieve it.
+
+    The entire output of the retrieval half, and everything the scoring half
+    needs from it. Ids rather than chunk text: the text is already in
+    data/chunks/, and inlining it would multiply the file by ``top_k`` for
+    nothing.
+    """
+
+    query_id: str
+    retrieved: list[UUID] = field(default_factory=list)
+    scores: list[float] = field(default_factory=list)
+    retriever_type: str = ""
+    latency_ms: float = 0.0
+
+    def as_dict(self) -> dict:
+        return {
+            "query_id": self.query_id,
+            "retrieved": [str(chunk_id) for chunk_id in self.retrieved],
+            # Parallel to `retrieved` rather than paired with it, so the ids
+            # stay a plain list — the charts and the qrels only ever want those.
+            "scores": [round(score, 6) for score in self.scores],
+            "retriever_type": self.retriever_type,
+            "latency_ms": round(self.latency_ms, 3),
+        }
+
+    @classmethod
+    def from_dict(cls, row: dict) -> Ranking:
+        return cls(
+            query_id=str(row["query_id"]),
+            retrieved=[UUID(str(chunk_id)) for chunk_id in row.get("retrieved", ())],
+            scores=[float(score) for score in row.get("scores", ())],
+            retriever_type=row.get("retriever_type", ""),
+            latency_ms=float(row.get("latency_ms", 0.0)),
+        )
+
+
+def retrieve_all(
     retriever: BaseRetriever,
     relevance: list[QueryRelevance],
     *,
     ks: Sequence[int] = DEFAULT_KS,
     top_k: int | None = None,
-    keep_per_query: bool = True,
-) -> EvaluationResult:
-    """Run every query through ``retriever`` and average the metrics.
+) -> list[Ranking]:
+    """Run every query through ``retriever``, keeping the ranked ids only.
 
     ``top_k`` defaults to the largest k being measured — retrieving fewer than
     that would cap the deepest metric at whatever was fetched.
+
+    This is the only part of evaluation that touches an index, an embedder, or
+    a model. Everything downstream — scoring, answering, judging — works from
+    the ids this returns, which is what lets those stages run without loading
+    faiss or torch and without re-running a search that has already happened.
     """
-    import time
-
-    if not relevance:
-        return EvaluationResult()
-
     depth = top_k or max(ks)
-    totals: dict[str, list[float]] = {}
-    per_query: list[dict] = []
-    latencies: list[float] = []
+    rankings: list[Ranking] = []
 
     for item in relevance:
         started = time.perf_counter()
         results = retriever.retrieve(item.query, top_k=depth)
-        latency_ms = (time.perf_counter() - started) * 1000
-        latencies.append(latency_ms)
+        rankings.append(
+            Ranking(
+                query_id=item.query_id,
+                retrieved=[result.chunk.id for result in results],
+                scores=[result.score for result in results],
+                retriever_type=str(results[0].retriever_type.value) if results else "",
+                latency_ms=(time.perf_counter() - started) * 1000,
+            )
+        )
+    return rankings
 
-        retrieved = [result.chunk.id for result in results]
-        scores = evaluate_query(retrieved, item.relevant, ks)
+
+def score_rankings(
+    rankings: Sequence[Ranking],
+    relevance: list[QueryRelevance],
+    *,
+    ks: Sequence[int] = DEFAULT_KS,
+    keep_per_query: bool = True,
+) -> EvaluationResult:
+    """Average every metric over rankings already produced, joining on query id.
+
+    Pure arithmetic over ids: no retriever, no index, no model. A query present
+    in ``relevance`` but missing from ``rankings`` is left out rather than
+    scored as a miss — an absent ranking means it was never run, which is not
+    the same as running and finding nothing.
+    """
+    by_id = {ranking.query_id: ranking for ranking in rankings}
+    matched = [(item, by_id[item.query_id]) for item in relevance if item.query_id in by_id]
+    if not matched:
+        return EvaluationResult()
+
+    missing = len(relevance) - len(matched)
+    if missing:
+        log.warning(f"{missing} of {len(relevance)} queries have no ranking — scoring the rest")
+
+    totals: dict[str, list[float]] = {}
+    per_query: list[dict] = []
+
+    for item, ranking in matched:
+        scores = evaluate_query(ranking.retrieved, item.relevant, ks)
         for name, value in scores.items():
             totals.setdefault(name, []).append(value)
 
@@ -200,28 +271,46 @@ def evaluate(
                     "doc_id": item.doc_id,
                     "section_id": item.section_id,
                     "num_relevant": len(item.relevant),
-                    "num_retrieved": len(retrieved),
+                    "num_retrieved": len(ranking.retrieved),
                     # Kept per query, not just averaged: the mean hides the
                     # shape, and the shape is the interesting part. Dense
                     # latency is tight around its median while hybrid carries a
                     # tail from BM25 scoring the whole corpus, and two configs
                     # can share a mean while one of them is occasionally slow.
-                    "latency_ms": round(latency_ms, 3),
-                    # The ranked ids, so a reranker can be scored against this
-                    # run without repeating the retrieval it would rerank. Ids
-                    # rather than chunk text: the text is already in
-                    # data/chunks/, and inlining it here would multiply the
-                    # result file by top_k for nothing.
-                    "retrieved": [str(chunk_id) for chunk_id in retrieved],
+                    "latency_ms": round(ranking.latency_ms, 3),
+                    # The ranked ids, so a reranker — or the generation stage —
+                    # can work from this run without repeating the retrieval.
+                    "retrieved": [str(chunk_id) for chunk_id in ranking.retrieved],
                     "relevant": [str(chunk_id) for chunk_id in item.relevant],
                     **scores,
                 }
             )
 
     return EvaluationResult(
-        num_queries=len(relevance),
+        num_queries=len(matched),
         means={name: statistics.mean(values) for name, values in totals.items()},
         per_query=per_query,
-        mean_latency_ms=statistics.mean(latencies),
-        mean_relevant_chunks=statistics.mean(len(item.relevant) for item in relevance),
+        mean_latency_ms=statistics.mean(ranking.latency_ms for _, ranking in matched),
+        mean_relevant_chunks=statistics.mean(len(item.relevant) for item, _ in matched),
     )
+
+
+def evaluate(
+    retriever: BaseRetriever,
+    relevance: list[QueryRelevance],
+    *,
+    ks: Sequence[int] = DEFAULT_KS,
+    top_k: int | None = None,
+    keep_per_query: bool = True,
+) -> EvaluationResult:
+    """Retrieve, then score — the two halves run back to back in one process.
+
+    Kept as the convenient path for a terminal question. A grid run splits them
+    so the expensive half writes its rankings once and every later stage reads
+    them.
+    """
+    if not relevance:
+        return EvaluationResult()
+
+    rankings = retrieve_all(retriever, relevance, ks=ks, top_k=top_k)
+    return score_rankings(rankings, relevance, ks=ks, keep_per_query=keep_per_query)

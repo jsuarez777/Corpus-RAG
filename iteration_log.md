@@ -189,3 +189,74 @@ one time in six, so the susceptible set is probably several times larger than
 the failures seen. Establishing it would mean re-judging the corpus and counting
 control characters rather than failures — cheap to do as a side effect of the
 next full run, and pointless as a standalone exercise.
+
+---
+
+## Iteration 3 — Saving the ranking, so nothing retrieves twice
+
+**Change:** Split retrieval out of scoring. `retrieve_all` produces ranked chunk
+ids and `score_rankings` consumes them; `evaluate()` is now the composition of
+the two. `app/retrieve.py` writes the ids to `experiments/rankings/`, and the
+stages downstream read them — `app/evaluate.py --from-rankings` scores them,
+`app/generate_answers.py` answers from them through a new `ReplayRetriever`.
+Both batch stages gained `--workers`.
+
+**Reason:** the same search was being run three times. The grid retrieved 488
+queries per cell to compute metrics; answer generation retrieved the same 488
+queries under the same config to build prompts; a reranker experiment would have
+made three. Retrieval is also the only stage that needs an index and an
+embedder, and that turned out to be what was blocking the batch stages from
+running concurrently — the thing they actually needed, since a 488-query pass
+was ~25 minutes to answer and ~12 to judge, almost all of it network wait.
+
+The obstacle was not obvious. `app/__init__.py` already fixed the faiss/torch
+collision by pinning `OMP_NUM_THREADS=1` and importing both in a fixed order,
+and its own docstring says why that is safe: "with one thread there is no race
+to lose". A `ThreadPoolExecutor` around a loop that retrieves puts the race
+back, and with `KMP_DUPLICATE_LIB_OK` set the documented failure is wrong
+results rather than a crash. So the choice was not "thread it or don't" — it was
+whether the parallel stage touches those libraries at all. Reading ids off disk
+means it does not.
+
+**Metric before:** 12 cells rescored in 117s, every one re-running its search ·
+answer generation re-retrieved 488 queries per config · both batch stages
+serial
+
+**Metric after:** 12 cells rescored in 1s from saved rankings · answers replay
+the ranking the grid already produced · 24 answers in ~11s against 79.1s of
+serial API time, and 24 judged in ~8s
+
+**Delta:** rescoring is ~100x faster and needs no index at all, which is the
+part that changes what is practical: adding a metric or a k to the grid is now
+seconds rather than two minutes of re-running searches whose answers have not
+changed. The batch stages are ~7x and ~5x on 8 workers — under the 8x ceiling,
+as expected, since the tail of a batch is one straggler.
+
+**Verified equal, not assumed.** The risk in splitting a function that both
+retrieves and scores is that the two halves stop agreeing and every number in
+`experiments/results/` shifts underneath. All twelve grid cells were rescored
+from saved rankings and compared against the committed results: 17 metrics each,
+0 mismatches to four decimal places.
+
+**The artifact carries scores and the retriever kind, not just ids.** A
+`RetrievalResult` cannot be constructed without both, so ids alone would have
+forced the replay path to invent them — and a replayed hybrid result reporting
+itself as dense would misattribute the passages behind every answer written from
+it. Ids stay a plain list with scores parallel to them, because the qrels and the
+charts only ever want the ids.
+
+**Chunk ids are per chunking run, which makes rankings invalidatable.**
+`Chunk.id` defaults to `uuid4()`, so re-running `app/chunk.py` renames every
+chunk and orphans every saved ranking. Skipping unresolvable ids would answer
+from fewer passages than asked for and read as a slightly worse config, so
+`as_results` raises instead and names the command that fixes it. Same reasoning
+behind refusing a ranking shallower than the depth asked for: a reranker wanting
+20 candidates and silently getting 5 is a different experiment, not a degraded
+one.
+
+**Not addressed:** `app/evaluate.py`'s flag path still writes the second result
+schema the charts cannot read, and it does not save rankings at all — only the
+`-c` path does. The reranker is still absent from the grid runner, though the
+rankings artifact is most of what wiring it in needs: a reranker reorders
+candidates that are now on disk, so scoring one no longer means re-running the
+retrieval it reranks.

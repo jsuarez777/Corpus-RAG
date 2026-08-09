@@ -97,6 +97,9 @@ experiments/results/
 # ~8MB per config; the judged reports are derived from them. Figures stay.
 experiments/answers/
 experiments/judged/
+# Rankings are ~4.7MB per grid and reproducible from data/chunks/ plus an
+# index, and they go stale the moment either is rebuilt.
+experiments/rankings/
 
 # Project notes (local only)
 project_goals

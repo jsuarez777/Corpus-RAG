@@ -11,7 +11,10 @@ from app.rag.retrieval._tokenize import STOPWORDS, tokenize
 from app.rag.retrieval.bm25 import BM25Retriever
 from app.rag.retrieval.dense import DenseRetriever
 from app.rag.retrieval.hybrid import DEFAULT_ALPHA, FUSIONS, HybridRetriever, normalize_scores
+from app.rag.retrieval.replay import ReplayRetriever
 
+# `replay` is deliberately absent: it serves a ranking some other retriever
+# already produced, so naming it in a config would describe no experiment.
 RETRIEVERS: dict[str, type[BaseRetriever]] = {
     DenseRetriever.name: DenseRetriever,
     BM25Retriever.name: BM25Retriever,
@@ -46,6 +49,7 @@ __all__ = [
     "BaseRetriever",
     "DenseRetriever",
     "HybridRetriever",
+    "ReplayRetriever",
     "get_retriever",
     "normalize_scores",
     "tokenize",

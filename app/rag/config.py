@@ -144,11 +144,18 @@ class PipelineConfig(BaseModel):
         """Stable identifier for one grid cell, including the retriever."""
         return f"{self.index_id}__{self.retriever.spec.replace(':', '_')}"
 
+    @property
+    def label(self) -> str:
+        """The axis label the charts plot this cell under.
+
+        ``top_k`` is deliberately absent: the retrieval charts and the
+        generation radar have to name the same cell to sit beside each other,
+        and they read it at different depths.
+        """
+        return f"{self.chunker.spec} | {self.embedder.spec} | {self.retriever.spec}"
+
     def summary(self) -> str:
-        return (
-            f"{self.chunker.spec} | {self.embedder.spec} | "
-            f"{self.retriever.spec} | top_k={self.top_k}"
-        )
+        return f"{self.label} | top_k={self.top_k}"
 
 
 # --------------------------------------------------------------------------- #
