@@ -15,8 +15,9 @@ Prefer tables and bullets to paragraphs. Expand only when asked.
 ## Commit messages
 
 Subject says what the commit is, not a summary of the session. The body says
-what changed and why it was worth doing. No backstory, no narrative, no metrics
-— measurements belong in `iteration_log.md`. One line per bug fixed.
+what changed, and may give the reason in one line — the purpose it serves, not
+the story of how it came up. No metrics; measurements belong in
+`iteration_log.md`. One line per bug fixed.
 
 ## Claims and measurements
 

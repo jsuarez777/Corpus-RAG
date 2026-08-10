@@ -85,11 +85,14 @@ def run_in_parallel(
                 for future in finished:
                     done_count += 1
                     result = future.result()
-                    if result is None:
-                        continue
-                    collected.append(result)
-                    if on_result:
-                        on_result(result)
+                    if result is not None:
+                        collected.append(result)
+                        if on_result:
+                            on_result(result)
+                    # Reported for failures too: progress is about the batch
+                    # finishing, not about how much of it worked. Counting only
+                    # successes makes a run whose last queries all failed stop
+                    # logging before the end and read as a hang.
                     if on_progress:
                         on_progress(done_count, len(items))
         except BaseException:
@@ -114,11 +117,10 @@ def _serial(
     total = len(items) if isinstance(items, Sequence) else 0
     for position, item in enumerate(items, start=1):
         result = work(item)
-        if result is None:
-            continue
-        collected.append(result)
-        if on_result:
-            on_result(result)
+        if result is not None:
+            collected.append(result)
+            if on_result:
+                on_result(result)
         if on_progress:
             on_progress(position, total)
     return collected
