@@ -19,7 +19,12 @@ from uuid import uuid4
 
 import pytest
 
-from app.evaluate import group_by_index, write_grid_result
+from app.evaluate import (
+    configs_from_flags,
+    group_by_index,
+    retriever_specs,
+    write_grid_result,
+)
 from app.rag.chunking import FixedSizeChunker, SemanticChunker
 from app.rag.config import (
     DEFAULT_TOP_K,
@@ -344,6 +349,56 @@ class TestGridGrouping:
 
     def test_grouping_is_stable_for_an_empty_grid(self) -> None:
         assert group_by_index([]) == {}
+
+
+class TestFlagsBecomeConfigs:
+    """`evaluate.py`'s two entry points must produce the same artifact.
+
+    The flag path used to write its own layout — several retrievers nested in
+    one file — which `load_result` refuses, so anything scored with flags was
+    invisible to every chart. Building configs from the flags instead means one
+    writer, one shape, and rankings saved on both paths.
+    """
+
+    def test_flags_become_one_config_per_chunker_and_retriever(self) -> None:
+        configs = configs_from_flags(["sentence:5:1", "fixed_size:512:128"], "minilm", ["dense"])
+        assert [c.id for c in configs] == [
+            "sentence_5_1__minilm__dense",
+            "fixed_size_512_128__minilm__dense",
+        ]
+
+    def test_the_alpha_sweep_becomes_one_spec_per_alpha(self) -> None:
+        assert retriever_specs([0.3, 0.7], "weighted") == [
+            "dense",
+            "bm25",
+            "hybrid:0.3",
+            "hybrid:0.7",
+        ]
+
+    def test_fusion_rides_in_the_spec_string(self) -> None:
+        """The flags used to pass fusion separately, which is why they needed
+        their own file format; the spec already carries it."""
+        assert "hybrid:0.5:rrf" in retriever_specs([0.5], "rrf")
+
+    def test_the_default_fusion_is_left_off_the_spec(self) -> None:
+        """`hybrid:0.5` and `hybrid:0.5:weighted` would otherwise be two
+        config_ids for one configuration."""
+        assert "hybrid:0.5" in retriever_specs([0.5], "weighted")
+
+    def test_a_retriever_name_selects_every_alpha(self) -> None:
+        assert retriever_specs([0.3, 0.7], "weighted", "hybrid") == ["hybrid:0.3", "hybrid:0.7"]
+
+    def test_a_full_spec_selects_one(self) -> None:
+        assert retriever_specs([0.3, 0.7], "weighted", "hybrid:0.7") == ["hybrid:0.7"]
+
+    def test_an_unknown_retriever_lists_the_real_ones(self) -> None:
+        with pytest.raises(SystemExit, match="dense"):
+            retriever_specs([0.5], "weighted", "nonesuch")
+
+    def test_flag_configs_are_buildable_and_group_like_any_other(self) -> None:
+        configs = configs_from_flags(["sentence:5:1"], "minilm", retriever_specs([0.5], "weighted"))
+        assert len(configs) == 3
+        assert len(group_by_index(configs)) == 1
 
 
 class TestGridResults:

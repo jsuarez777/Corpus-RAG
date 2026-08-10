@@ -124,20 +124,19 @@ class RunResult:
 def load_result(path: Path) -> RunResult:
     """Read one result file, rejecting a shape this cannot actually read.
 
-    ``app/evaluate.py``'s flag-driven path writes a different layout — several
-    retrievers nested under one file, and a ``config`` that is a handful of
-    strings rather than a dumped :class:`PipelineConfig`. Pydantic ignores the
-    keys it does not recognise, so that file parses without complaint into a
-    record with no metrics and a retriever nobody chose: a heatmap row of
-    0.000 across the board, which reads as a config that scored badly rather
-    than one that was never read. Refusing it makes :func:`load_results` skip
-    it and say why.
+    Both ways into ``app/evaluate.py`` now write one config per file, but files
+    from before that do not: the flag path used to nest several retrievers
+    under one ``retrievers`` key with a ``config`` of loose strings. Pydantic
+    ignores keys it does not recognise, so such a file parses without complaint
+    into a record with no metrics and a retriever nobody chose — a heatmap row
+    of 0.000, which reads as a config that scored badly rather than one that was
+    never read. Refusing it makes :func:`load_results` skip it and say why.
     """
     data = json.loads(Path(path).read_text())
     if "retrievers" in data:
         raise ValueError(
-            "written by the flag-driven path, which stores several retrievers per "
-            "file; re-score it with `evaluate.py -c <experiment.yaml>`"
+            "written by the old flag-driven path, which stored several retrievers "
+            "per file; re-score it with `evaluate.py`"
         )
     if not data.get("means"):
         raise ValueError("no metrics in the file")

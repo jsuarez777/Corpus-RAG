@@ -41,7 +41,7 @@ from pathlib import Path
 if __package__ in (None, ""):  # `python app/evaluate.py` runs this as a script
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from app.rag.base import BaseEmbedder, BaseRetriever  # noqa: E402
+from app.rag.base import BaseEmbedder  # noqa: E402
 from app.rag.chunking import chunk_file, load_chunks  # noqa: E402
 from app.rag.config import PipelineConfig, build_retriever, load_grid, read_yaml  # noqa: E402
 from app.rag.embedding import DEFAULT_EMBEDDER, EMBEDDERS, get_embedder  # noqa: E402
@@ -50,14 +50,17 @@ from app.rag.evaluation import (  # noqa: E402
     EvaluationResult,
     Ranking,
     build_relevance,
-    evaluate,
     retrieve_all,
     score_rankings,
 )
 from app.rag.evaluation.qrels import QueryRelevance, load_benchmark  # noqa: E402
 from app.rag.evaluation.rankings import load_rankings, rankings_file, write_rankings  # noqa: E402
-from app.rag.retrieval import BM25Retriever, DenseRetriever, HybridRetriever  # noqa: E402
-from app.rag.stores import config_id, index_dir, open_store  # noqa: E402
+from app.rag.retrieval import BM25Retriever  # noqa: E402
+from app.rag.stores import (  # noqa: E402
+    index_dir,
+    open_store,
+    require_same_chunk_set,
+)
 from app.rag.utils.logging_utils import setup_logging  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -88,29 +91,53 @@ def available_specs(chunks_dir: Path) -> dict[str, Path]:
     return found
 
 
-def build_retrievers(
-    spec: str,
-    embedder_name: str,
-    chunks: list,
-    indices_dir: Path,
-    *,
-    alphas: list[float],
-    fusion: str,
-) -> dict[str, BaseRetriever]:
-    """Every retriever to be scored on this (chunker, embedder) pair."""
-    target = index_dir(indices_dir, spec, embedder_name)
-    if not target.is_dir():
-        raise SystemExit(
-            f"No index at {_display(target)} — run `python app/index.py {spec} -e {embedder_name}`."
+#: Experiment name recorded for a flag-driven run. Named rather than blank so
+#: the charts can tell an ad-hoc score from a declared grid, which is the whole
+#: reason results carry the field.
+ADHOC_EXPERIMENT = "adhoc"
+
+
+def retriever_specs(alphas: list[float], fusion: str, only: str | None = None) -> list[str]:
+    """Retriever spec strings for a flag-driven run.
+
+    The spec carries what the flags used to pass separately — ``hybrid:0.3``
+    pins alpha, ``hybrid:0.3:rrf`` pins fusion too — so a flag run describes
+    itself the same way a YAML cell does and needs no second file format.
+
+    ``only`` accepts a bare name (``hybrid``, matching every alpha) or a full
+    spec (``hybrid:0.5``).
+    """
+    suffix = "" if fusion == "weighted" else f":{fusion}"
+    specs = ["dense", "bm25", *[f"hybrid:{alpha:g}{suffix}" for alpha in alphas]]
+    if not only:
+        return specs
+
+    chosen = [s for s in specs if s == only or s.partition(":")[0] == only]
+    if not chosen:
+        raise SystemExit(f"Unknown retriever {only!r}. Have: {', '.join(specs)}")
+    return chosen
+
+
+def configs_from_flags(
+    specs: list[str], embedder: str, retrievers: list[str], top_k: int = max(DEFAULT_KS)
+) -> list[PipelineConfig]:
+    """One :class:`PipelineConfig` per (chunker, retriever) the flags asked for.
+
+    Flag runs and YAML runs produce the same result files because they produce
+    the same configs — there is no second code path, and nothing downstream has
+    to know which way a score was asked for.
+    """
+    return [
+        PipelineConfig(
+            name=ADHOC_EXPERIMENT,
+            chunker=chunker,
+            embedder=embedder,
+            retriever=retriever,
+            top_k=top_k,
         )
-
-    dense = DenseRetriever(open_store(target), get_embedder(embedder_name))
-    sparse = BM25Retriever(chunks)
-
-    retrievers: dict[str, BaseRetriever] = {"dense": dense, "bm25": sparse}
-    for alpha in alphas:
-        retrievers[f"hybrid@{alpha:g}"] = HybridRetriever(dense, sparse, alpha=alpha, fusion=fusion)
-    return retrievers
+        for chunker in specs
+        for retriever in retrievers
+    ]
 
 
 def group_by_index(configs: list[PipelineConfig]) -> dict[str, list[PipelineConfig]]:
@@ -170,7 +197,9 @@ def retrieve_grid(
                 f"run `python app/index.py {chunker_spec} -e {embedder_name}`."
             )
 
-        chunks = load_chunks(chunk_file(chunks_dir, chunker_spec, embedder_name))
+        path = chunk_file(chunks_dir, chunker_spec, embedder_name)
+        require_same_chunk_set(path, target)
+        chunks = load_chunks(path)
         relevance, report = build_relevance(chunks, queries, qrels, answers)
         if not relevance:
             log.error(f"{index_id}: no scoreable queries — has `python app/align.py` been run?")
@@ -346,57 +375,6 @@ def print_grid_table(scored: list[tuple[PipelineConfig, EvaluationResult]]) -> N
         print(f"{row}{result.mean_latency_ms:>8.0f}")
 
 
-def write_result(
-    results_dir: Path,
-    spec: str,
-    embedder_name: str,
-    fusion: str,
-    scored: dict[str, EvaluationResult],
-    relevance_summary: str,
-    ks: tuple[int, ...],
-) -> Path:
-    """One JSON per run, config included, so a results table can be rebuilt."""
-    results_dir.mkdir(parents=True, exist_ok=True)
-    stamp = time.strftime("%Y%m%d_%H%M%S")
-    target = results_dir / f"{stamp}_{config_id(spec, embedder_name)}.json"
-
-    target.write_text(
-        json.dumps(
-            {
-                "config": {
-                    "chunker": spec,
-                    "embedder": embedder_name,
-                    "fusion": fusion,
-                    "ks": list(ks),
-                },
-                "corpus": relevance_summary,
-                "retrievers": {
-                    name: {
-                        "num_queries": result.num_queries,
-                        "mean_latency_ms": round(result.mean_latency_ms, 2),
-                        "mean_relevant_chunks": round(result.mean_relevant_chunks, 1),
-                        "means": {k: round(v, 4) for k, v in result.means.items()},
-                        "per_query": result.per_query,
-                    }
-                    for name, result in scored.items()
-                },
-            },
-            indent=2,
-        )
-    )
-    return target
-
-
-def print_table(scored: dict[str, EvaluationResult], ks: tuple[int, ...]) -> None:
-    """The comparison the whole stage exists to produce."""
-    columns = ["hit_rate@1", "hit_rate@5", "mrr", "ndcg@5", "precision@5", f"coverage@{max(ks)}"]
-    header = f"{'retriever':<16}" + "".join(f"{name:>13}" for name in columns) + f"{'ms':>8}"
-    print(f"\n{header}\n{'-' * len(header)}")
-    for name, result in scored.items():
-        row = f"{name:<16}" + "".join(f"{result.means.get(c, 0):>13.4f}" for c in columns)
-        print(f"{row}{result.mean_latency_ms:>8.0f}")
-
-
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Score retrieval configs against the benchmark qrels.",
@@ -546,44 +524,49 @@ def main(argv: list[str] | None = None) -> int:
             log.error(f"No index built for {args.embedder!r} — run `python app/index.py`.")
             return 1
 
+    configs = configs_from_flags(
+        targets,
+        args.embedder,
+        retriever_specs(args.alpha_sweep, args.fusion, args.retriever),
+    )
     queries, qrels, answers = load_benchmark(args.benchmark)
 
-    for spec in targets:
-        chunks = load_chunks(chunk_file(args.chunks, spec, args.embedder))
-        relevance, report = build_relevance(chunks, queries, qrels, answers)
-        if not relevance:
-            log.error(f"{spec}: no scoreable queries — has `python app/align.py` been run?")
-            continue
-        if args.limit:
-            relevance = relevance[: args.limit]
-
-        retrievers = build_retrievers(
-            spec,
-            args.embedder,
-            chunks,
-            args.indices,
-            alphas=args.alpha_sweep,
-            fusion=args.fusion,
-        )
-        if args.retriever:
-            if args.retriever not in retrievers:
-                log.error(f"Unknown retriever {args.retriever!r}. Have: {', '.join(retrievers)}")
-                return 1
-            retrievers = {args.retriever: retrievers[args.retriever]}
-
-        print(f"\n=== {spec} | {args.embedder} ===\n{report.summary()}")
-        scored = {
-            name: evaluate(retriever, relevance, ks=DEFAULT_KS)
-            for name, retriever in retrievers.items()
-        }
-        print_table(scored, DEFAULT_KS)
-
+    def report_cell(config: PipelineConfig, result: EvaluationResult, corpus: str) -> None:
+        print(f"  {config.retriever.spec:<14} {result.summary(DEFAULT_KS)}")
         if not args.no_write:
-            path = write_result(
-                args.out, spec, args.embedder, args.fusion, scored, report.summary(), DEFAULT_KS
-            )
-            log.info(f"Wrote {_display(path)}")
+            path = write_grid_result(args.out, config, result, corpus, DEFAULT_KS, ADHOC_EXPERIMENT)
+            log.debug(f"  wrote {_display(path)}")
 
+    def save_rankings(config: PipelineConfig, rankings: list[Ranking]) -> None:
+        write_rankings(
+            args.rankings,
+            rankings,
+            config_id=config.id,
+            label=config.label,
+            index_id=config.index_id,
+            experiment=ADHOC_EXPERIMENT,
+            top_k=config.top_k,
+            config=config.model_dump(mode="json"),
+        )
+
+    scored = run_grid(
+        configs,
+        queries,
+        qrels,
+        answers,
+        chunks_dir=args.chunks,
+        indices_dir=args.indices,
+        limit=args.limit,
+        on_result=report_cell,
+        on_rankings=None if args.no_write or args.no_rankings else save_rankings,
+    )
+    if not scored:
+        log.error("No cell produced a score.")
+        return 1
+
+    print_grid_table(scored)
+    if not args.no_write:
+        log.info(f"Results under {_display(args.out)}")
     return 0
 
 
